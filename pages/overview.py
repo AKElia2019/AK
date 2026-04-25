@@ -470,6 +470,158 @@ def _render_kelly_block(kelly: dict, capital: float) -> None:
         st.caption("No caps or haircuts applied — fractional Kelly is the final size.")
 
 
+def _render_rn_pdf_chart(pipe) -> None:
+    """Plot the Breeden-Litzenberger risk-neutral density."""
+    rn = getattr(pipe, "rn_curve", None)
+    if rn is None:
+        return
+    K = np.asarray(rn["K"], dtype=float)
+    pdf = np.asarray(rn["pdf"], dtype=float)
+    if len(K) < 2:
+        return
+    mean = float(rn["mean"])
+    std = float(rn["std"])
+    mode = float(rn["mode"])
+    spot = float(pipe.spot or 0.0)
+
+    st.markdown(_label("Risk-Neutral Density"),
+                unsafe_allow_html=True)
+    fig = go.Figure()
+
+    # Shade left of spot (red) / right of spot (green)
+    if spot > 0:
+        left_mask = K <= spot
+        right_mask = K >= spot
+        if left_mask.any():
+            xs = np.concatenate([[K[left_mask][0]], K[left_mask], [K[left_mask][-1]]])
+            ys = np.concatenate([[0], pdf[left_mask], [0]])
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="none", fill="toself",
+                fillcolor="rgba(168,50,50,0.10)", hoverinfo="skip",
+                showlegend=False,
+            ))
+        if right_mask.any():
+            xs = np.concatenate([[K[right_mask][0]], K[right_mask], [K[right_mask][-1]]])
+            ys = np.concatenate([[0], pdf[right_mask], [0]])
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="none", fill="toself",
+                fillcolor="rgba(26,122,107,0.10)", hoverinfo="skip",
+                showlegend=False,
+            ))
+
+    # PDF curve
+    fig.add_trace(go.Scatter(
+        x=K, y=pdf, mode="lines",
+        line=dict(color=GOLD, width=2.4), name="RN density",
+        hovertemplate="$%{x:,.0f}<br>density %{y:.6f}<extra></extra>",
+    ))
+
+    # Reference verticals
+    if spot > 0 and K[0] <= spot <= K[-1]:
+        fig.add_vline(x=spot, line=dict(color=TEAL, width=1.8, dash="dot"),
+                      annotation_text=f" Spot ${spot:,.0f}",
+                      annotation_font=dict(color=TEAL, size=10))
+    if K[0] <= mean <= K[-1]:
+        fig.add_vline(x=mean, line=dict(color=AMBER, width=1.8, dash="dash"),
+                      annotation_text=f" RN mean ${mean:,.0f}",
+                      annotation_font=dict(color=AMBER, size=10))
+    if K[0] <= mode <= K[-1] and abs(mode - mean) > std * 0.05:
+        fig.add_vline(x=mode, line=dict(color=STONE, width=1.0, dash="dash"),
+                      annotation_text=f" Mode ${mode:,.0f}",
+                      annotation_font=dict(color=STONE, size=9))
+    # ±1σ / ±2σ markers
+    for sign in (-1, 1):
+        for mult, color, dash in ((1, "#daa520", "dot"), (2, "#a78bfa", "dash")):
+            xv = mean + sign * mult * std
+            if K[0] <= xv <= K[-1]:
+                fig.add_vline(x=xv, line=dict(color=color, width=0.8, dash=dash))
+
+    p_above = pipe.rn_p_above_spot
+    p_above_pct = f"{p_above*100:.1f}%" if p_above is not None else "—"
+    skew = rn.get("skew", 0.0)
+    skew_label = (
+        "right-skewed (rally bias)" if skew > 0.3
+        else "left-skewed (crash bias)" if skew < -0.3
+        else "near-symmetric"
+    )
+
+    fig.update_layout(
+        paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        font=dict(family="DM Mono, monospace", color="#44403A", size=11),
+        height=320,
+        margin=dict(l=58, r=20, t=30, b=44),
+        title=dict(
+            text=f"P(price > spot) {p_above_pct} · skew {skew:+.2f} ({skew_label})",
+            font=dict(size=12, color=INK), x=0.0, xanchor="left",
+        ),
+        xaxis=dict(title="BTC at expiry ($)", gridcolor="#EDEBE6"),
+        yaxis=dict(title="Density", gridcolor="#EDEBE6"),
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _render_gex_chart(pipe) -> None:
+    """Bar chart of dealer gamma exposure per strike + cumulative line + flip strike."""
+    gex = getattr(pipe, "gex", None)
+    if gex is None or gex.by_strike is None or gex.by_strike.empty:
+        return
+
+    df = gex.by_strike.copy().sort_values("strike").reset_index(drop=True)
+    cumulative = df["gex_usd_per_pct"].cumsum() / 1e9  # in B$/1%
+    bar_b = df["gex_usd_per_pct"] / 1e9
+    bar_colors = [TEAL if v >= 0 else RED for v in bar_b]
+
+    st.markdown(_label("GEX by Strike"), unsafe_allow_html=True)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["strike"], y=bar_b,
+        marker=dict(color=bar_colors, line=dict(width=0)),
+        name="GEX per strike (B$/1%)",
+        hovertemplate="Strike $%{x:,.0f}<br>GEX %{y:+.3f} B$/1%<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["strike"], y=cumulative,
+        mode="lines",
+        line=dict(color=GOLD, width=2.0),
+        name="Cumulative",
+        yaxis="y2",
+        hovertemplate="Strike $%{x:,.0f}<br>Cum %{y:+.3f} B$/1%<extra></extra>",
+    ))
+
+    if pipe.spot:
+        fig.add_vline(x=float(pipe.spot), line=dict(color=TEAL, width=1.6, dash="dot"),
+                      annotation_text=f" Spot ${pipe.spot:,.0f}",
+                      annotation_font=dict(color=TEAL, size=10))
+    if gex.flip_strike:
+        fig.add_vline(x=gex.flip_strike, line=dict(color=AMBER, width=1.6, dash="dash"),
+                      annotation_text=f" Flip ${gex.flip_strike:,.0f}",
+                      annotation_font=dict(color=AMBER, size=10))
+
+    fig.add_hline(y=0, line=dict(color=STONE, width=1, dash="dot"))
+
+    total_b = gex.gex_usd_per_pct / 1e9
+    regime_label = "long γ · stable" if total_b > 0 else "short γ · fragile"
+    fig.update_layout(
+        paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        font=dict(family="DM Mono, monospace", color="#44403A", size=11),
+        height=320,
+        margin=dict(l=58, r=58, t=30, b=44),
+        title=dict(
+            text=(f"Total dealer GEX {total_b:+.2f} B$/1% · {regime_label} · "
+                  f"{gex.n_options} contracts"),
+            font=dict(size=12, color=INK), x=0.0, xanchor="left",
+        ),
+        xaxis=dict(title="Strike ($)", gridcolor="#EDEBE6"),
+        yaxis=dict(title="Per-strike GEX (B$/1%)", gridcolor="#EDEBE6"),
+        yaxis2=dict(title="Cumulative GEX (B$/1%)", overlaying="y", side="right",
+                    showgrid=False, tickfont=dict(color=GOLD)),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
+        bargap=0.05,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def _render_options_state(pipe) -> None:
     """Live GEX + RN summary + RN drift, sourced from the pipeline result."""
     st.markdown(_label("Options State"), unsafe_allow_html=True)
@@ -1000,6 +1152,26 @@ def main() -> None:
     # 5. Options-side state — only when the live pipeline supplied them
     if pipeline_result is not None:
         _render_options_state(pipeline_result)
+
+        # 5b. RN PDF + GEX charts side-by-side
+        rn_curve_avail = getattr(pipeline_result, "rn_curve", None) is not None
+        gex_avail = (
+            pipeline_result.gex is not None
+            and pipeline_result.gex.by_strike is not None
+            and not pipeline_result.gex.by_strike.empty
+        )
+        if rn_curve_avail or gex_avail:
+            cols = st.columns(2, gap="medium")
+            with cols[0]:
+                if rn_curve_avail:
+                    _render_rn_pdf_chart(pipeline_result)
+                else:
+                    st.caption("RN density unavailable for current chain.")
+            with cols[1]:
+                if gex_avail:
+                    _render_gex_chart(pipeline_result)
+                else:
+                    st.caption("GEX unavailable for current chain.")
 
     # 6. Levels (stop / TP ladder)
     _render_levels(plan)

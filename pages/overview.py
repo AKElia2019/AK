@@ -447,7 +447,85 @@ def _render_kelly_block(kelly: dict, capital: float) -> None:
         st.caption("No caps or haircuts applied — fractional Kelly is the final size.")
 
 
-def _render_reasoning(rec: Recommendation) -> None:
+def _render_options_state(pipe) -> None:
+    """Live GEX + RN summary, sourced from the pipeline result."""
+    st.markdown(_label("Options State"), unsafe_allow_html=True)
+    cols = st.columns(4)
+
+    # ATM IV
+    iv = pipe.atm_iv_pct
+    cols[0].metric("ATM IV", f"{iv:.1f}%" if iv is not None else "—")
+
+    # RN mean vs spot
+    rn = pipe.rn_mean
+    if rn is not None and pipe.spot:
+        gap_pct = (rn - pipe.spot) / pipe.spot * 100.0
+        cols[1].metric("RN mean", _fmt_money(rn), f"{gap_pct:+.2f}% vs spot")
+    else:
+        cols[1].metric("RN mean", "—")
+
+    # P(above spot)
+    p_above = pipe.rn_p_above_spot
+    if p_above is not None:
+        cols[2].metric("P(above spot)", f"{p_above*100:.1f}%")
+    else:
+        cols[2].metric("P(above spot)", "—")
+
+    # GEX
+    gex = pipe.gex
+    if gex is not None:
+        gex_b = gex.gex_usd_per_pct / 1e9
+        regime_label = (
+            "long γ · stable" if gex.gex_usd_per_pct > 0 else
+            "short γ · fragile"
+        )
+        cols[3].metric(
+            "Dealer GEX",
+            f"{gex_b:+.2f} B$/1%",
+            f"{regime_label} · {gex.n_options} contracts",
+        )
+        if gex.flip_strike:
+            st.caption(
+                f"GEX flip strike ≈ ${gex.flip_strike:,.0f} · "
+                f"normalized {pipe.gex_normalized:+.2f} (saturates at ±5B$/1%)"
+            )
+        else:
+            st.caption(f"Normalized GEX {pipe.gex_normalized:+.2f} (saturates at ±5B$/1%)")
+    else:
+        cols[3].metric("Dealer GEX", "—")
+
+
+def _render_levels(plan: TradePlan) -> None:
+    """Stop / TP1 / TP2 / Runner row. Hidden when there is no directional bias."""
+    if plan.bias == "no_trade":
+        return
+    st.markdown(_label("Levels"), unsafe_allow_html=True)
+    cols = st.columns(5)
+    cols[0].metric("Entry", _fmt_money(plan.entry))
+    cols[1].metric(
+        "Stop",
+        _fmt_money(plan.stop),
+        f"-${abs(plan.entry - plan.stop):,.0f}",
+        delta_color="inverse",
+    )
+    cols[2].metric(
+        "TP1",
+        _fmt_money(plan.tp1),
+        f"+${abs(plan.tp1 - plan.entry):,.0f}",
+    )
+    cols[3].metric(
+        "TP2",
+        _fmt_money(plan.tp2),
+        f"+${abs(plan.tp2 - plan.entry):,.0f} · R/R {plan.risk_reward_tp2:.2f}x",
+    )
+    cols[4].metric(
+        "Runner",
+        _fmt_money(plan.runner),
+        f"+${abs(plan.runner - plan.entry):,.0f}",
+    )
+
+
+def _render_reasoning(rec: Recommendation, regime: Optional[RegimeAssessment] = None) -> None:
     st.markdown(_label("Reasoning"), unsafe_allow_html=True)
     color = _bias_color(rec.bias)
     bullets = "<br>".join(f"&bull;&nbsp;&nbsp;{line}" for line in rec.explanation[:3])
@@ -457,6 +535,29 @@ def _render_reasoning(rec: Recommendation) -> None:
         f"{bullets}</div>",
         unsafe_allow_html=True,
     )
+
+    # Regime evidence — collapsible so the headline view stays clean
+    if regime is not None:
+        with st.expander(
+            f"Regime detail · {regime.regime.replace('_',' ').title()} "
+            f"· confidence {regime.confidence*100:.0f}%"
+        ):
+            # Per-regime confidence scores
+            score_rows = [
+                {"Regime": k.replace("_", " ").title(), "Confidence": f"{v*100:.0f}%"}
+                for k, v in regime.scores.items()
+            ]
+            if score_rows:
+                st.dataframe(
+                    pd.DataFrame(score_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            # Evidence bullets per candidate regime
+            for label, lines in regime.rationale.items():
+                st.markdown(f"**{label.replace('_',' ').title()}**")
+                for line in lines:
+                    st.markdown(f"• {line}")
 
 
 def _render_insufficient_data(reason: str) -> None:
@@ -600,8 +701,8 @@ def _badge(source: Optional[str]) -> str:
 def _render_live_snapshot(snap: dict) -> None:
     st.markdown(_label("Live Market Snapshot"), unsafe_allow_html=True)
 
-    # Row 1 — prices & funding (Binance / Deribit / Coinglass)
-    c1, c2, c3, c4, c5 = st.columns(5)
+    # Row 1 — spot price + funding views + positioning (4 columns; perp tile dropped as redundant)
+    c1, c2, c3, c4 = st.columns(4)
 
     bs = snap.get("binance_spot")
     c1.metric(
@@ -610,47 +711,40 @@ def _render_live_snapshot(snap: dict) -> None:
     )
     c1.markdown(_badge(bs["source"] if bs else None), unsafe_allow_html=True)
 
-    bp = snap.get("binance_perp")
-    c2.metric(
-        "Binance perp",
-        _fmt_money(bp["price"]) if bp else "—",
-    )
-    c2.markdown(_badge(bp["source"] if bp else None), unsafe_allow_html=True)
-
     bf = snap.get("binance_funding")
     if bf:
         ann = bf["rate"] * 3 * 365 * 100
-        c3.metric(
+        c2.metric(
             "Binance funding",
             f"{bf['rate']*100:+.4f}%/8h",
             f"{ann:+.1f}% ann",
         )
     else:
-        c3.metric("Binance funding", "—")
-    c3.markdown(_badge(bf["source"] if bf else None), unsafe_allow_html=True)
+        c2.metric("Binance funding", "—")
+    c2.markdown(_badge(bf["source"] if bf else None), unsafe_allow_html=True)
 
     cgf = snap.get("coinglass_funding")
     if cgf:
         ann = cgf["rate"] * 3 * 365 * 100
-        c4.metric(
+        c3.metric(
             "Aggregated funding",
             f"{cgf['rate']*100:+.4f}%/8h",
             f"{ann:+.1f}% ann · OI-wtd",
         )
     else:
-        c4.metric("Aggregated funding", "—")
-    c4.markdown(_badge(cgf["source"] if cgf else None), unsafe_allow_html=True)
+        c3.metric("Aggregated funding", "—")
+    c3.markdown(_badge(cgf["source"] if cgf else None), unsafe_allow_html=True)
 
     cgls = snap.get("coinglass_ls")
     if cgls:
-        c5.metric(
+        c4.metric(
             "Long / Short",
             f"{cgls['ratio']:.2f}x",
             f"L {cgls['long_pct']:.0f}% · S {cgls['short_pct']:.0f}%",
         )
     else:
-        c5.metric("Long / Short", "—")
-    c5.markdown(_badge(cgls["source"] if cgls else None), unsafe_allow_html=True)
+        c4.metric("Long / Short", "—")
+    c4.markdown(_badge(cgls["source"] if cgls else None), unsafe_allow_html=True)
 
     # Row 2 — open interest (Binance / Deribit / Coinglass) + liquidations
     d1, d2, d3, d4 = st.columns(4)
@@ -865,10 +959,17 @@ def main() -> None:
     # 4. Kelly sizing
     _render_kelly_block(kelly, capital=float(inp["capital"]))
 
-    # 5. Reasoning
-    _render_reasoning(rec)
+    # 5. Options-side state — only when the live pipeline supplied them
+    if pipeline_result is not None:
+        _render_options_state(pipeline_result)
 
-    # 6. Live signal table (transparency) — only shown in live mode
+    # 6. Levels (stop / TP ladder)
+    _render_levels(plan)
+
+    # 6. Reasoning + regime evidence
+    _render_reasoning(rec, regime=regime)
+
+    # 7. Live signal table (transparency) — only shown in live mode
     if pipeline_result is not None and not pipeline_result.signal_table.empty:
         st.markdown(_label("Live Signal Table"), unsafe_allow_html=True)
         st.caption(

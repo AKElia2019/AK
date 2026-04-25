@@ -62,6 +62,9 @@ from data.coinglass import (                     # noqa: E402
     coinglass_status,
 )
 
+# End-to-end pipeline
+from analytics.pipeline import run_pipeline, PipelineResult  # noqa: E402
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # THEME
@@ -273,8 +276,31 @@ def _fmt_money(x: Optional[float]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner="Running live pipeline…")
+def _cached_pipeline(capital: float, primary_tf: str,
+                     nearest_support: float, nearest_resistance: float) -> dict:
+    """Cached wrapper. Returns a dict so the result is hashable for cache."""
+    res: PipelineResult = run_pipeline(
+        capital=capital,
+        primary_timeframe=primary_tf,
+        nearest_support=nearest_support if nearest_support > 0 else None,
+        nearest_resistance=nearest_resistance if nearest_resistance > 0 else None,
+    )
+    # The PipelineResult is a frozen dataclass — we expose it directly.
+    return {"result": res}
+
+
 def _sidebar_inputs() -> dict:
     sb = st.sidebar
+
+    sb.markdown("### Mode")
+    live_mode = sb.toggle(
+        "Live signal pipeline",
+        value=True,
+        help="Compute scores, regime and trade plan from live Binance/Deribit/Coinglass data. "
+             "Turn off to drive everything from the sliders below.",
+    )
+
     sb.markdown("### Scores")
     score_1h = sb.slider("1h composite", -100, 100, 68, 1)
     score_4h = sb.slider("4h composite", -100, 100, 72, 1)
@@ -306,6 +332,7 @@ def _sidebar_inputs() -> dict:
     insufficient = sb.checkbox("Force 'Insufficient Data' (failsafe demo)", value=False)
 
     return dict(
+        live_mode=live_mode,
         score_1h=score_1h, score_4h=score_4h,
         stable_1h=stable_1h, stable_4h=stable_4h,
         regime_label=regime_label, regime_conf=regime_conf,
@@ -746,59 +773,88 @@ def main() -> None:
         st.caption("Position size = 0% (failsafe).")
         return
 
-    # Build a RegimeAssessment from sidebar so the upstream pipeline runs end-to-end.
-    regime = RegimeAssessment(
-        regime=inp["regime_label"],
-        confidence=float(inp["regime_conf"]),
-        direction=None,
-        scores={inp["regime_label"]: float(inp["regime_conf"])},
-        rationale={inp["regime_label"]: ["Provided manually via sidebar"]},
-    )
+    # ── Live mode: pipeline drives everything ─────────────────────────────
+    pipeline_result: Optional[PipelineResult] = None
+    if inp.get("live_mode"):
+        try:
+            pipe = _cached_pipeline(
+                capital=float(inp["capital"]),
+                primary_tf=str(inp["primary_tf"]),
+                nearest_support=float(inp["nearest_support"]),
+                nearest_resistance=float(inp["nearest_resistance"]),
+            )
+            pipeline_result = pipe["result"]
+        except Exception as exc:
+            st.warning(f"Live pipeline failed ({exc}). Falling back to slider inputs.")
 
-    rec = evaluate_recommendation(
-        RecommendationInputs(
-            score_1h=float(inp["score_1h"]),
-            score_4h=float(inp["score_4h"]),
-            regime_4h=regime,
-            stable_1h=bool(inp["stable_1h"]),
-            stable_4h=bool(inp["stable_4h"]),
-            atm_iv_pct=float(inp["atm_iv"]),
-            primary_timeframe=str(inp["primary_tf"]),
+    if pipeline_result is not None:
+        rec = pipeline_result.recommendation
+        plan = pipeline_result.trade_plan
+        regime = pipeline_result.regime
+        score_1h_used = pipeline_result.score_1h
+        score_4h_used = pipeline_result.score_4h
+        spot_used = pipeline_result.spot if pipeline_result.spot > 0 else float(inp["spot"])
+        atm_iv_used = pipeline_result.atm_iv_pct
+        stable_1h_used = pipeline_result.stable_1h
+        stable_4h_used = pipeline_result.stable_4h
+    else:
+        # Manual / slider mode (failsafe or live mode disabled)
+        regime = RegimeAssessment(
+            regime=inp["regime_label"],
+            confidence=float(inp["regime_conf"]),
+            direction=None,
+            scores={inp["regime_label"]: float(inp["regime_conf"])},
+            rationale={inp["regime_label"]: ["Provided manually via sidebar"]},
         )
-    )
-
-    plan = build_trade_plan(
-        SizingInputs(
-            bias=rec.bias,
-            setup=rec.setup,
-            conviction=rec.conviction,
-            capital=float(inp["capital"]),
-            spot=float(inp["spot"]),
-            atm_iv_pct=float(inp["atm_iv"]),
-            stable_1h=bool(inp["stable_1h"]),
-            stable_4h=bool(inp["stable_4h"]),
-            nearest_support=(float(inp["nearest_support"]) if inp["nearest_support"] > 0 else None),
-            nearest_resistance=(float(inp["nearest_resistance"]) if inp["nearest_resistance"] > 0 else None),
+        rec = evaluate_recommendation(
+            RecommendationInputs(
+                score_1h=float(inp["score_1h"]),
+                score_4h=float(inp["score_4h"]),
+                regime_4h=regime,
+                stable_1h=bool(inp["stable_1h"]),
+                stable_4h=bool(inp["stable_4h"]),
+                atm_iv_pct=float(inp["atm_iv"]),
+                primary_timeframe=str(inp["primary_tf"]),
+            )
         )
-    )
+        plan = build_trade_plan(
+            SizingInputs(
+                bias=rec.bias,
+                setup=rec.setup,
+                conviction=rec.conviction,
+                capital=float(inp["capital"]),
+                spot=float(inp["spot"]),
+                atm_iv_pct=float(inp["atm_iv"]),
+                stable_1h=bool(inp["stable_1h"]),
+                stable_4h=bool(inp["stable_4h"]),
+                nearest_support=(float(inp["nearest_support"]) if inp["nearest_support"] > 0 else None),
+                nearest_resistance=(float(inp["nearest_resistance"]) if inp["nearest_resistance"] > 0 else None),
+            )
+        )
+        score_1h_used = float(inp["score_1h"])
+        score_4h_used = float(inp["score_4h"])
+        spot_used = float(inp["spot"])
+        atm_iv_used = float(inp["atm_iv"])
+        stable_1h_used = bool(inp["stable_1h"])
+        stable_4h_used = bool(inp["stable_4h"])
 
     kelly = kelly_sizing(
-        score_4h=float(inp["score_4h"]),
+        score_4h=score_4h_used,
         conviction=rec.conviction,
         bias=rec.bias,
-        stable=bool(inp["stable_1h"] and inp["stable_4h"]),
+        stable=bool(stable_1h_used and stable_4h_used),
         odds=float(inp["odds"]),
     )
 
     # 1. Quadrant — primary visual
-    _render_quadrant(float(inp["score_4h"]), rec.conviction, rec.bias)
+    _render_quadrant(score_4h_used, rec.conviction, rec.bias)
 
     # 2. Key metrics row
     _render_metrics_row(
-        spot=float(inp["spot"]),
-        score_1h=float(inp["score_1h"]),
-        score_4h=float(inp["score_4h"]),
-        regime=rec.setup if rec.setup != "none" else inp["regime_label"],
+        spot=spot_used,
+        score_1h=score_1h_used,
+        score_4h=score_4h_used,
+        regime=rec.setup if rec.setup != "none" else regime.regime,
         conviction=rec.conviction,
         bias=rec.bias,
     )
@@ -811,6 +867,20 @@ def main() -> None:
 
     # 5. Reasoning
     _render_reasoning(rec)
+
+    # 6. Live signal table (transparency) — only shown in live mode
+    if pipeline_result is not None and not pipeline_result.signal_table.empty:
+        st.markdown(_label("Live Signal Table"), unsafe_allow_html=True)
+        st.caption(
+            "Per-signal contributions feeding the 4h composite. "
+            "Each `value` is normalised to [-1, +1]. "
+            "Positive = bullish, negative = bearish, 0 = neutral / no data."
+        )
+        st.dataframe(
+            pipeline_result.signal_table,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 main()

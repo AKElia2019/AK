@@ -84,20 +84,18 @@ from data.coinglass import (
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class PipelineResult:
-    """Everything the UI layer needs to render."""
+    """Everything the UI layer needs to render.
 
+    Field-ordering rule for this dataclass: all fields without a default
+    come first, all fields with a default come at the end.
+    """
+
+    # ── Required fields (no defaults) ────────────────────────────────────
     # Market state
     spot: float
     atm_iv_pct: Optional[float]
     rn_mean: Optional[float]
     rn_p_above_spot: Optional[float]
-    rn_curve: Optional[dict] = None    # full BL fit dict (K, pdf, cdf, std, mode, …)
-
-    # OI-adjusted RN curve — same shape as `rn_curve` but density is tilted by
-    # the open-interest profile across strikes.
-    rn_oi_curve: Optional[dict] = None
-    rn_oi_mean: Optional[float] = None
-    rn_oi_p_above_spot: Optional[float] = None
 
     # Composite scores per timeframe (in [-100, +100], EMA-smoothed)
     score_1h: float
@@ -131,6 +129,17 @@ class PipelineResult:
     # Transparency
     signal_table: pd.DataFrame
     sources: dict
+
+    # ── Optional fields (with defaults, must come last) ──────────────────
+    # Full Breeden-Litzenberger fit (K, pdf, cdf, std, mode, …).
+    rn_curve: Optional[dict] = None
+
+    # OI-adjusted RN curve — same shape as `rn_curve` but density is tilted by
+    # the open-interest profile across strikes.
+    rn_oi_curve: Optional[dict] = None
+    rn_oi_mean: Optional[float] = None
+    rn_oi_p_above_spot: Optional[float] = None
+
     raw: dict = field(default_factory=dict)
 
 

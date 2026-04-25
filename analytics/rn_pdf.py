@@ -62,6 +62,121 @@ def _trapz(y, x):
     return np.trapezoid(y, x) if hasattr(np, "trapezoid") else np.trapz(y, x)
 
 
+def compute_oi_adjusted_pdf(
+    chain: pd.DataFrame,
+    base_pdf: dict,
+    spot: float,
+    oi_strength: float = 0.45,
+    oi_smooth: float = 1.5,
+) -> Optional[dict]:
+    """Tilt a Breeden-Litzenberger RN density with the open-interest profile.
+
+    The OI overlay smooths option open-interest across strikes, z-scores it,
+    and applies a multiplicative tilt to the base RN density. The result is
+    a *positioning-adjusted* implied distribution — not a true risk-neutral
+    density, but a useful read on where the chain is *crowded* vs. the
+    market-implied probability mass.
+
+    Returns a dict with the same keys as `compute_rn_pdf` plus:
+        oi_curve     smoothed OI evaluated on K
+        oi_zone      strike with the largest OI cluster
+        tilt         the multiplicative tilt vector applied to base_pdf
+        strength     `oi_strength` (echoed)
+    """
+    if not _HAS_SCIPY or not base_pdf or chain is None or chain.empty:
+        return None
+    if "open_interest" not in chain.columns or "strike" not in chain.columns:
+        return None
+
+    K = np.asarray(base_pdf["K"], dtype=float)
+    base = np.asarray(base_pdf["pdf"], dtype=float)
+    if len(K) < 5 or len(base) != len(K):
+        return None
+
+    work = chain.copy()
+    work["strike"] = pd.to_numeric(work["strike"], errors="coerce")
+    work["open_interest"] = pd.to_numeric(work["open_interest"], errors="coerce")
+    work = work.dropna(subset=["strike"])
+    if work.empty:
+        return None
+
+    oi_by_strike = (
+        work.groupby("strike")["open_interest"]
+        .sum(min_count=1)
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .sort_index()
+    )
+    if oi_by_strike.empty or float(oi_by_strike.sum()) <= 0:
+        return None
+
+    strikes = oi_by_strike.index.to_numpy(dtype=float)
+    oi_vals = oi_by_strike.to_numpy(dtype=float)
+
+    oi_sigma = oi_smooth * max(1.0, 10.0 / max(len(strikes), 1))
+    oi_smoothed = gaussian_filter1d(oi_vals, sigma=oi_sigma)
+    oi_interp = np.interp(K, strikes, oi_smoothed, left=0.0, right=0.0)
+
+    if not np.isfinite(oi_interp).any() or float(np.sum(oi_interp)) <= 0:
+        return None
+
+    mu = float(np.mean(oi_interp))
+    sd = float(np.std(oi_interp))
+    z = np.zeros_like(oi_interp) if sd <= 1e-12 else (oi_interp - mu) / sd
+    z = np.clip(z, -3.0, 3.0)
+
+    tilt = np.maximum(0.05, 1.0 + oi_strength * z)
+    adj_density = np.maximum(base * tilt, 0.0)
+
+    area = float(_trapz(adj_density, K))
+    if not np.isfinite(area) or area <= 0:
+        return None
+
+    adj_pdf = adj_density / area
+    dK = float(K[1] - K[0])
+    adj_cdf = np.cumsum(adj_pdf) * dK
+    if adj_cdf[-1] <= 0:
+        return None
+    adj_cdf = adj_cdf / adj_cdf[-1]
+
+    mean = float(_trapz(K * adj_pdf, K))
+    var = float(_trapz((K - mean) ** 2 * adj_pdf, K))
+    std = math.sqrt(max(var, 0.0))
+    skew = (
+        float(_trapz(((K - mean) / (std + 1e-9)) ** 3 * adj_pdf, K))
+        if std > 0 else 0.0
+    )
+    mode = float(K[int(np.argmax(adj_pdf))])
+    oi_zone = float(K[int(np.argmax(oi_interp))])
+
+    if spot < K[0]:
+        p_above = 1.0
+    elif spot > K[-1]:
+        p_above = 0.0
+    else:
+        idx = int(np.searchsorted(K, float(spot)))
+        idx = max(0, min(idx, len(adj_cdf) - 1))
+        p_above = float(1.0 - adj_cdf[idx])
+
+    return {
+        "K": K,
+        "pdf": adj_pdf,
+        "cdf": adj_cdf,
+        "mean": mean,
+        "std": std,
+        "skew": skew,
+        "mode": mode,
+        "oi_curve": oi_interp,
+        "oi_zone": oi_zone,
+        "tilt": tilt,
+        "strength": float(oi_strength),
+        "oi_smooth": float(oi_smooth),
+        "p_above_spot": p_above,
+        "dte": base_pdf.get("dte"),
+        "n": base_pdf.get("n"),
+    }
+
+
 def compute_rn_pdf(
     chain: pd.DataFrame,
     spot: float,

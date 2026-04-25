@@ -57,7 +57,7 @@ from analytics.recommendation import (
 )
 from analytics.position_sizing import SizingInputs, TradePlan, build_trade_plan
 from analytics.gex import GEXResult, compute_gex
-from analytics.rn_pdf import compute_rn_pdf
+from analytics.rn_pdf import compute_oi_adjusted_pdf, compute_rn_pdf
 from analytics.smoothing import (
     SmoothingResult,
     apply_smoothing,
@@ -92,6 +92,12 @@ class PipelineResult:
     rn_mean: Optional[float]
     rn_p_above_spot: Optional[float]
     rn_curve: Optional[dict] = None    # full BL fit dict (K, pdf, cdf, std, mode, …)
+
+    # OI-adjusted RN curve — same shape as `rn_curve` but density is tilted by
+    # the open-interest profile across strikes.
+    rn_oi_curve: Optional[dict] = None
+    rn_oi_mean: Optional[float] = None
+    rn_oi_p_above_spot: Optional[float] = None
 
     # Composite scores per timeframe (in [-100, +100], EMA-smoothed)
     score_1h: float
@@ -204,6 +210,13 @@ def _compute_rn_stats(chain: pd.DataFrame, spot: float) -> dict:
         out["p_above"] = float(bl["p_above_spot"])
         out["skew"] = float(bl["skew"])  # already a unitless RN skew
         out["rn_full"] = bl
+
+        # OI-adjusted overlay
+        oi_adj = compute_oi_adjusted_pdf(bl_input, bl, spot)
+        if oi_adj is not None:
+            out["rn_oi_full"] = oi_adj
+            out["rn_oi_mean"] = float(oi_adj["mean"])
+            out["rn_oi_p_above"] = float(oi_adj["p_above_spot"])
         return out
 
     # Fallback: wing-skew proxy
@@ -721,6 +734,9 @@ def run_pipeline(
         rn_mean=rn_stats.get("rn_mean"),
         rn_p_above_spot=rn_stats.get("p_above"),
         rn_curve=rn_stats.get("rn_full"),
+        rn_oi_curve=rn_stats.get("rn_oi_full"),
+        rn_oi_mean=rn_stats.get("rn_oi_mean"),
+        rn_oi_p_above_spot=rn_stats.get("rn_oi_p_above"),
         score_1h=score_1h,
         score_4h=score_4h,
         score_1h_raw=score_1h_raw,

@@ -76,6 +76,15 @@ class Settings:
         default_factory=lambda: os.getenv("DERIBIT_CLIENT_SECRET")
     )
 
+    coinglass_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com"
+        )
+    )
+    coinglass_api_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("COINGLASS_API_KEY")
+    )
+
     # ── HTTP defaults ─────────────────────────────────────────────────────
     request_timeout_seconds: int = field(
         default_factory=lambda: int(os.getenv("REQUEST_TIMEOUT", "10"))

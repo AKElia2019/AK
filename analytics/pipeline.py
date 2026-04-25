@@ -58,6 +58,11 @@ from analytics.recommendation import (
 from analytics.position_sizing import SizingInputs, TradePlan, build_trade_plan
 from analytics.gex import GEXResult, compute_gex
 from analytics.rn_pdf import compute_rn_pdf
+from analytics.smoothing import (
+    SmoothingResult,
+    apply_smoothing,
+    get_config as _get_smoothing_config,
+)
 
 from data.spot import fetch_binance_spot_ticker
 from data.futures import (
@@ -87,17 +92,27 @@ class PipelineResult:
     rn_mean: Optional[float]
     rn_p_above_spot: Optional[float]
 
-    # Composite scores per timeframe (in [-100, +100])
+    # Composite scores per timeframe (in [-100, +100], EMA-smoothed)
     score_1h: float
     score_4h: float
+    score_1h_raw: float           # un-smoothed latest reading (for transparency)
+    score_4h_raw: float
     composite_4h: CompositeScore
+
+    # Per-bar history (DataFrames indexed by bar time, with both raw and
+    # smoothed columns: composite, composite_smooth, options, futures,
+    # spot, liquidity, flow, options_smooth, …)
+    history_1h: pd.DataFrame
+    history_4h: pd.DataFrame
 
     # GEX
     gex: Optional[GEXResult]
     gex_normalized: float  # in [-1, +1]
 
-    # Stability flags (placeholder — true smoothing/EMA across snapshots
-    # will be added once the pipeline is invoked from a stateful caller).
+    # RN drift (signed, normalized) — computed from caller-supplied history
+    rn_drift_normalized: float
+
+    # Stability flags from the EMA-smoothing layer
     stable_1h: bool
     stable_4h: bool
 
@@ -232,6 +247,191 @@ def _options_signals(chain: pd.DataFrame, spot: float, rn_stats: dict) -> list[d
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FLOW SIGNALS (latest snapshot only)
+# ─────────────────────────────────────────────────────────────────────────────
+def _flow_signals_latest(cg_ls: pd.DataFrame, cg_liq: pd.DataFrame) -> list[dict]:
+    out: list[dict] = []
+    if cg_ls is not None and not cg_ls.empty:
+        long_pct = _last_value(cg_ls, "long_pct") or 50.0
+        short_pct = _last_value(cg_ls, "short_pct") or 50.0
+        score = max(-1.0, min(1.0, (long_pct - short_pct) / 100.0))
+        out.append(_sig("long_short_ratio", score))
+    if cg_liq is not None and not cg_liq.empty:
+        long_liq = _last_value(cg_liq, "long_liq_usd") or 0.0
+        short_liq = _last_value(cg_liq, "short_liq_usd") or 0.0
+        out.append(_sig("liquidation_imbalance",
+                        normalize_whale_activity(short_liq, long_liq)))
+    out.append(_sig("exchange_flows", normalize_exchange_flows(0.0)))
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PER-BAR SCORE HISTORY  (vectorized features → per-bar composite)
+# ─────────────────────────────────────────────────────────────────────────────
+def _compute_score_history(
+    timeframe: str,
+    kl: pd.DataFrame,
+    oi_hist: pd.DataFrame,
+    funding: pd.DataFrame,
+    chain: pd.DataFrame,
+    spot: float,
+    rn_stats: dict,
+    cg_ls: pd.DataFrame,
+    cg_liq: pd.DataFrame,
+    history_bars: int = 80,
+) -> pd.DataFrame:
+    """Walk the kline history and compute the composite score per bar.
+
+    Spot- and futures-family signals are recomputed at every bar from
+    pandas-rolling features (SMA stack, vol baseline, VWAP, OI Δ, funding).
+    Options- and flow-family signals are taken from the latest snapshot
+    (they don't have venue-side history accessible at this layer) and
+    held constant across the bar history. The output is then ready for
+    EMA smoothing in `analytics.smoothing`.
+
+    Returns a DataFrame indexed by bar timestamp with columns:
+        composite, options, futures, spot, liquidity, flow
+    """
+    if kl is None or kl.empty or len(kl) < 5:
+        return pd.DataFrame()
+
+    df = kl.copy().reset_index(drop=True)
+    closes = df["close"].astype(float)
+    highs = df["high"].astype(float)
+    lows = df["low"].astype(float)
+    vols = df["volume"].astype(float).replace(0.0, np.nan)
+    times = pd.to_datetime(df["time"], utc=True)
+
+    # ── Trend structure (SMA stack), vectorized ───────────────────────────
+    sma20 = closes.rolling(20, min_periods=20).mean()
+    sma50 = closes.rolling(50, min_periods=50).mean()
+    sma200 = closes.rolling(200, min_periods=200).mean()
+
+    def _aln(a: pd.Series, b: pd.Series) -> pd.Series:
+        # +0.25 if a > b, −0.25 if a ≤ b, 0 if either is NaN
+        out = pd.Series(0.0, index=a.index)
+        valid = a.notna() & b.notna()
+        out[valid & (a > b)] = 0.25
+        out[valid & (a <= b)] = -0.25
+        return out
+
+    ts = (
+        _aln(closes, sma20)
+        + _aln(sma20, sma50)
+        + _aln(sma50, sma200)
+        + _aln(closes, sma200)
+    ).clip(-1.0, 1.0)
+    # Where SMA200 is missing, force 0
+    ts = ts.where(sma200.notna(), 0.0)
+
+    # ── Volume confirmation: relative-to-baseline × close direction ────────
+    vol_baseline = vols.shift(1).rolling(20, min_periods=20).mean()
+    direction = np.sign(closes.diff()).fillna(0.0)
+    rel = (vols / vol_baseline - 1.0).fillna(0.0)
+    vc = (direction * rel).clip(-1.0, 1.0).fillna(0.0)
+
+    # ── VWAP distance over a rolling window ────────────────────────────────
+    win = 24 if timeframe == "1h" else 6
+    typ = (highs + lows + closes) / 3.0
+    pv = typ * vols
+    vol_sum = vols.rolling(win, min_periods=win).sum()
+    pv_sum = pv.rolling(win, min_periods=win).sum()
+    vwap = (pv_sum / vol_sum).where(vol_sum > 0)
+    vw = (((closes - vwap) / vwap) * 100.0).fillna(0.0).clip(-1.0, 1.0)
+    # `pct_scale` from the normalizer is 1% — equivalent to clipping at ±1
+
+    # ── Spot pct change ────────────────────────────────────────────────────
+    spot_pct = closes.pct_change().fillna(0.0) * 100.0
+
+    # ── OI series aligned to klines ────────────────────────────────────────
+    if oi_hist is not None and not oi_hist.empty:
+        oi_idx = pd.to_datetime(oi_hist["time"], utc=True)
+        oi_series = pd.Series(
+            oi_hist["oi_base"].astype(float).values, index=oi_idx
+        ).sort_index()
+        oi_at_bar = (
+            oi_series.reindex(oi_series.index.union(times))
+            .sort_index()
+            .ffill()
+            .reindex(times)
+        )
+        oi_pct = oi_at_bar.pct_change().fillna(0.0).values * 100.0
+    else:
+        oi_pct = np.zeros(len(df))
+
+    # ── OI quadrant per bar ────────────────────────────────────────────────
+    sp = np.array(spot_pct.values, dtype=float)
+    op = np.array(oi_pct, dtype=float)
+    s_dir = np.sign(sp)
+    o_dir = np.sign(op)
+    s_norm = np.clip(sp / 2.0, -1.0, 1.0)
+    o_norm = np.clip(op / 1.0, -1.0, 1.0)
+    mag = np.sqrt(np.abs(s_norm) * np.abs(o_norm))
+    same_sign = (s_dir == o_dir) & (s_dir != 0)
+    oi_q = np.where(same_sign, s_dir * mag, -0.5 * s_dir * mag)
+    oi_q = np.clip(np.nan_to_num(oi_q), -1.0, 1.0)
+
+    # ── Funding at bar (forward-fill) ──────────────────────────────────────
+    if funding is not None and not funding.empty:
+        f_idx = pd.to_datetime(funding["time"], utc=True)
+        f_series = pd.Series(
+            funding["funding_rate"].astype(float).values, index=f_idx
+        ).sort_index()
+        f_at_bar = (
+            f_series.reindex(f_series.index.union(times))
+            .sort_index()
+            .ffill()
+            .reindex(times)
+            .fillna(0.0)
+            .values
+        )
+    else:
+        f_at_bar = np.zeros(len(df))
+
+    fund_sig = np.array([normalize_funding(float(x)) for x in f_at_bar])
+
+    # ── Latest-snapshot signals (constant across bar history) ─────────────
+    options_signals = _options_signals(chain, spot, rn_stats)
+    flow_signals = _flow_signals_latest(cg_ls, cg_liq)
+    liquidity_signals = [_sig("orderbook_imbalance", normalize_orderbook_imbalance([], []))]
+
+    # ── Per-bar composite (only the last `history_bars` to bound cost) ────
+    start = max(0, len(df) - history_bars)
+    rows = []
+    for i in range(start, len(df)):
+        sigs = {
+            "options": options_signals,
+            "futures": [
+                {"name": "oi_quadrant", "value": float(oi_q[i])},
+                {"name": "funding", "value": float(fund_sig[i])},
+                {"name": "basis", "value": 0.0},
+            ],
+            "spot": [
+                {"name": "trend_structure", "value": float(ts.iloc[i])},
+                {"name": "volume_confirmation", "value": float(vc.iloc[i])},
+                {"name": "vwap_distance", "value": float(vw.iloc[i])},
+            ],
+            "liquidity": liquidity_signals,
+            "flow": flow_signals,
+        }
+        comp = compute_composite(sigs, weights=DEFAULT_FAMILY_WEIGHTS)
+        rows.append(
+            {
+                "time": times.iloc[i],
+                "composite": comp.final_score,
+                "options": comp.sub_scores["options"].score,
+                "futures": comp.sub_scores["futures"].score,
+                "spot": comp.sub_scores["spot"].score,
+                "liquidity": comp.sub_scores["liquidity"].score,
+                "flow": comp.sub_scores["flow"].score,
+            }
+        )
+
+    out = pd.DataFrame(rows).set_index("time")
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PER-TIMEFRAME COMPUTATION
 # ─────────────────────────────────────────────────────────────────────────────
 def _features_for_timeframe(
@@ -333,8 +533,19 @@ def run_pipeline(
     primary_timeframe: str = "4h",
     nearest_support: Optional[float] = None,
     nearest_resistance: Optional[float] = None,
+    prev_rn_mean: Optional[float] = None,
+    history_bars: int = 80,
 ) -> PipelineResult:
-    """Fetch live data, compute everything, and return a PipelineResult."""
+    """Fetch live data, compute everything, and return a PipelineResult.
+
+    Args:
+        prev_rn_mean: Caller-supplied previous RN mean (typically pulled
+            from session_state). When provided, drives the RN-drift signal
+            via `normalize_rn_drift`. Pass `None` on the very first run.
+        history_bars: How many of the most recent bars to score per
+            timeframe before EMA smoothing. Lower = faster, less smoothing
+            depth. 80 is a good default.
+    """
 
     # ── Fetch raw inputs ──────────────────────────────────────────────────
     spot_df = fetch_binance_spot_ticker()
@@ -380,13 +591,60 @@ def run_pipeline(
     composite_1h = compute_composite(sigs_1h, weights=DEFAULT_FAMILY_WEIGHTS)
     composite_4h = compute_composite(sigs_4h, weights=DEFAULT_FAMILY_WEIGHTS)
 
-    score_1h = composite_1h.final_score
-    score_4h = composite_4h.final_score
+    # ── Per-bar history + EMA smoothing ───────────────────────────────────
+    hist_1h = _compute_score_history(
+        "1h", kl_1h, oi_1h, funding, chain, spot, rn_stats, cg_ls, cg_liq, history_bars
+    )
+    hist_4h = _compute_score_history(
+        "4h", kl_4h, oi_4h, funding, chain, spot, rn_stats, cg_ls, cg_liq, history_bars
+    )
 
-    # ── Stability flags (placeholder until a stateful caller adds smoothing) ──
-    # For now: stable iff the score is far enough from zero to be meaningful.
-    stable_1h = abs(score_1h) >= 5.0
-    stable_4h = abs(score_4h) >= 5.0
+    def _smooth_history(hist: pd.DataFrame, tf: str) -> tuple[pd.DataFrame, float, float, bool]:
+        """Apply EMA smoothing per `analytics.smoothing` and return:
+        smoothed-augmented history, smoothed final score (latest), raw
+        latest score, stability flag."""
+        if hist is None or hist.empty:
+            return pd.DataFrame(), 0.0, 0.0, False
+        family_cols = ["options", "futures", "spot", "liquidity", "flow"]
+        signal_history = hist[family_cols].copy()
+        final_history = hist["composite"].copy()
+        sm = apply_smoothing(signal_history, final_history, timeframe=tf)
+        # Augment the history with smoothed columns for charting
+        out = hist.copy()
+        for col in family_cols:
+            out[f"{col}_smooth"] = sm.smoothed_signals[col]
+        out["composite_smooth"] = sm.smoothed_final
+        return (
+            out,
+            float(sm.latest_final),
+            float(final_history.iloc[-1]),
+            bool(sm.final_stability),
+        )
+
+    history_1h_aug, score_1h, score_1h_raw, stable_1h = _smooth_history(hist_1h, "1h")
+    history_4h_aug, score_4h, score_4h_raw, stable_4h = _smooth_history(hist_4h, "4h")
+
+    # Fallback to raw composite if smoothing produced nothing (insufficient history)
+    if score_4h == 0.0 and abs(composite_4h.final_score) > 0:
+        score_4h = composite_4h.final_score
+        score_4h_raw = composite_4h.final_score
+    if score_1h == 0.0 and abs(composite_1h.final_score) > 0:
+        score_1h = composite_1h.final_score
+        score_1h_raw = composite_1h.final_score
+
+    # ── RN drift (signal) — only when caller passes a previous RN mean ────
+    rn_drift_norm = 0.0
+    if (
+        prev_rn_mean is not None
+        and rn_stats.get("rn_mean") is not None
+        and spot > 0
+    ):
+        rn_drift_norm = normalize_rn_drift(
+            rn_mean_curr=float(rn_stats["rn_mean"]),
+            rn_mean_prev=float(prev_rn_mean),
+            spot=float(spot),
+            pct_scale=1.0,
+        )
 
     # ── Regime ────────────────────────────────────────────────────────────
     regime_inputs = RegimeInputs(
@@ -400,7 +658,7 @@ def run_pipeline(
             (s["value"] for s in sigs_4h["spot"] if s["name"] == "volume_confirmation"),
             0.0,
         ),
-        rn_drift_normalized=0.0,                  # RN drift requires snapshot history
+        rn_drift_normalized=rn_drift_norm,
         rn_mean=rn_stats.get("rn_mean"),
         spot=spot,
         rn_std=rn_stats.get("rn_std"),
@@ -463,9 +721,14 @@ def run_pipeline(
         rn_p_above_spot=rn_stats.get("p_above"),
         score_1h=score_1h,
         score_4h=score_4h,
+        score_1h_raw=score_1h_raw,
+        score_4h_raw=score_4h_raw,
         composite_4h=composite_4h,
+        history_1h=history_1h_aug,
+        history_4h=history_4h_aug,
         gex=gex_result,
         gex_normalized=gex_norm,
+        rn_drift_normalized=rn_drift_norm,
         stable_1h=stable_1h,
         stable_4h=stable_4h,
         regime=regime,

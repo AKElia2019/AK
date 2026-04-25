@@ -47,7 +47,13 @@ def fmt_money(x) -> str:
 
 
 def base_layout(title: str = None, height: int = 320) -> dict:
-    """Plotly layout dict — light theme matching the rest of the app."""
+    """Plotly layout dict — light theme matching the rest of the app.
+
+    Returns paper / plot bg, font, height, margin, and title. Callers are
+    expected to supply their own `xaxis=` / `yaxis=` (and any secondary
+    axes) so the helper never collides with caller kwargs when expanded
+    via `**base_layout(...)`.
+    """
     return dict(
         paper_bgcolor="#FFFFFF",
         plot_bgcolor="#FFFFFF",
@@ -58,6 +64,4 @@ def base_layout(title: str = None, height: int = 320) -> dict:
             dict(text=title, font=dict(size=12, color=INK), x=0.0, xanchor="left")
             if title else None
         ),
-        xaxis=dict(gridcolor="#EDEBE6"),
-        yaxis=dict(gridcolor="#EDEBE6"),
     )

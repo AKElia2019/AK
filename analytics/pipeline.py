@@ -91,6 +91,7 @@ class PipelineResult:
     atm_iv_pct: Optional[float]
     rn_mean: Optional[float]
     rn_p_above_spot: Optional[float]
+    rn_curve: Optional[dict] = None    # full BL fit dict (K, pdf, cdf, std, mode, …)
 
     # Composite scores per timeframe (in [-100, +100], EMA-smoothed)
     score_1h: float
@@ -719,6 +720,7 @@ def run_pipeline(
         atm_iv_pct=atm_iv,
         rn_mean=rn_stats.get("rn_mean"),
         rn_p_above_spot=rn_stats.get("p_above"),
+        rn_curve=rn_stats.get("rn_full"),
         score_1h=score_1h,
         score_4h=score_4h,
         score_1h_raw=score_1h_raw,

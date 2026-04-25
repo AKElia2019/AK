@@ -46,6 +46,25 @@ from analytics.position_sizing import (       # noqa: E402
 )
 from analytics.regime import RegimeAssessment  # noqa: E402
 
+# Live data connectors
+from data.spot import fetch_binance_spot_ticker  # noqa: E402
+from data.futures import (                       # noqa: E402
+    fetch_binance_perp_klines,
+    fetch_binance_funding_history,
+    fetch_binance_open_interest_hist,
+    fetch_deribit_open_interest,
+)
+from data.coinglass import (                     # noqa: E402
+    fetch_coinglass_aggregated_oi,
+    fetch_coinglass_funding_oi_weighted,
+    fetch_coinglass_long_short_ratio,
+    fetch_coinglass_liquidations,
+    coinglass_status,
+)
+
+# End-to-end pipeline
+from analytics.pipeline import run_pipeline, PipelineResult  # noqa: E402
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # THEME
@@ -257,8 +276,31 @@ def _fmt_money(x: Optional[float]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner="Running live pipeline…")
+def _cached_pipeline(capital: float, primary_tf: str,
+                     nearest_support: float, nearest_resistance: float) -> dict:
+    """Cached wrapper. Returns a dict so the result is hashable for cache."""
+    res: PipelineResult = run_pipeline(
+        capital=capital,
+        primary_timeframe=primary_tf,
+        nearest_support=nearest_support if nearest_support > 0 else None,
+        nearest_resistance=nearest_resistance if nearest_resistance > 0 else None,
+    )
+    # The PipelineResult is a frozen dataclass — we expose it directly.
+    return {"result": res}
+
+
 def _sidebar_inputs() -> dict:
     sb = st.sidebar
+
+    sb.markdown("### Mode")
+    live_mode = sb.toggle(
+        "Live signal pipeline",
+        value=True,
+        help="Compute scores, regime and trade plan from live Binance/Deribit/Coinglass data. "
+             "Turn off to drive everything from the sliders below.",
+    )
+
     sb.markdown("### Scores")
     score_1h = sb.slider("1h composite", -100, 100, 68, 1)
     score_4h = sb.slider("4h composite", -100, 100, 72, 1)
@@ -290,6 +332,7 @@ def _sidebar_inputs() -> dict:
     insufficient = sb.checkbox("Force 'Insufficient Data' (failsafe demo)", value=False)
 
     return dict(
+        live_mode=live_mode,
         score_1h=score_1h, score_4h=score_4h,
         stable_1h=stable_1h, stable_4h=stable_4h,
         regime_label=regime_label, regime_conf=regime_conf,
@@ -427,6 +470,247 @@ def _render_insufficient_data(reason: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LIVE MARKET SNAPSHOT  (Binance + Deribit + Coinglass)
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner=False)
+def _live_snapshot() -> dict:
+    """Pull a live snapshot from every connected venue.
+    Cached for 30s so quick reruns don't hammer the APIs.
+    Each field is None if the venue / endpoint is unreachable."""
+    out: dict = {
+        "binance_spot": None,
+        "binance_perp": None,
+        "binance_funding": None,
+        "binance_oi": None,
+        "deribit_oi": None,
+        "coinglass_oi": None,
+        "coinglass_funding": None,
+        "coinglass_ls": None,
+        "coinglass_liq": None,
+        "coinglass_status": coinglass_status(),
+    }
+    try:
+        df = fetch_binance_spot_ticker()
+        if not df.empty:
+            out["binance_spot"] = {
+                "price": float(df["price"].iloc[-1]),
+                "source": str(df["_source"].iloc[-1]),
+            }
+    except Exception as exc:
+        log_msg = f"binance_spot ticker error: {exc}"
+        out["binance_spot_error"] = log_msg
+
+    try:
+        kl = fetch_binance_perp_klines(interval="1h", limit=2)
+        if not kl.empty and len(kl) >= 1:
+            out["binance_perp"] = {
+                "price": float(kl["close"].iloc[-1]),
+                "source": str(kl["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        f = fetch_binance_funding_history(limit=1)
+        if not f.empty:
+            out["binance_funding"] = {
+                "rate": float(f["funding_rate"].iloc[-1]),
+                "source": str(f["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        oi = fetch_binance_open_interest_hist(period="1h", limit=2)
+        if not oi.empty:
+            out["binance_oi"] = {
+                "oi_base": float(oi["oi_base"].iloc[-1]),
+                "oi_usd": float(oi["oi_usd"].iloc[-1]),
+                "source": str(oi["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        d_oi = fetch_deribit_open_interest()
+        if not d_oi.empty:
+            out["deribit_oi"] = {
+                "oi_base": float(d_oi["oi_base"].iloc[-1]),
+                "oi_usd": float(d_oi["oi_usd"].iloc[-1]),
+                "source": str(d_oi["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        cg_oi = fetch_coinglass_aggregated_oi(interval="1h", limit=2)
+        if not cg_oi.empty:
+            out["coinglass_oi"] = {
+                "oi_usd": float(cg_oi["oi_usd"].iloc[-1]),
+                "change_pct": float(cg_oi["oi_change_pct"].iloc[-1]),
+                "source": str(cg_oi["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        cg_f = fetch_coinglass_funding_oi_weighted(interval="1h", limit=1)
+        if not cg_f.empty:
+            out["coinglass_funding"] = {
+                "rate": float(cg_f["funding_rate"].iloc[-1]),
+                "source": str(cg_f["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        cg_ls = fetch_coinglass_long_short_ratio(interval="1h", limit=1)
+        if not cg_ls.empty:
+            out["coinglass_ls"] = {
+                "long_pct": float(cg_ls["long_pct"].iloc[-1]),
+                "short_pct": float(cg_ls["short_pct"].iloc[-1]),
+                "ratio": float(cg_ls["ratio"].iloc[-1]),
+                "source": str(cg_ls["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    try:
+        cg_liq = fetch_coinglass_liquidations(interval="1h", limit=1)
+        if not cg_liq.empty:
+            out["coinglass_liq"] = {
+                "long_liq_usd": float(cg_liq["long_liq_usd"].iloc[-1]),
+                "short_liq_usd": float(cg_liq["short_liq_usd"].iloc[-1]),
+                "source": str(cg_liq["_source"].iloc[-1]),
+            }
+    except Exception:
+        pass
+
+    return out
+
+
+def _badge(source: Optional[str]) -> str:
+    if source == "live":
+        return f'<span style="color:{TEAL};font-size:9px;font-weight:600;letter-spacing:.08em;">● LIVE</span>'
+    if source == "mock":
+        return f'<span style="color:{AMBER};font-size:9px;font-weight:600;letter-spacing:.08em;">● MOCK</span>'
+    return f'<span style="color:{STONE};font-size:9px;font-weight:600;letter-spacing:.08em;">● —</span>'
+
+
+def _render_live_snapshot(snap: dict) -> None:
+    st.markdown(_label("Live Market Snapshot"), unsafe_allow_html=True)
+
+    # Row 1 — prices & funding (Binance / Deribit / Coinglass)
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    bs = snap.get("binance_spot")
+    c1.metric(
+        "Binance spot",
+        _fmt_money(bs["price"]) if bs else "—",
+    )
+    c1.markdown(_badge(bs["source"] if bs else None), unsafe_allow_html=True)
+
+    bp = snap.get("binance_perp")
+    c2.metric(
+        "Binance perp",
+        _fmt_money(bp["price"]) if bp else "—",
+    )
+    c2.markdown(_badge(bp["source"] if bp else None), unsafe_allow_html=True)
+
+    bf = snap.get("binance_funding")
+    if bf:
+        ann = bf["rate"] * 3 * 365 * 100
+        c3.metric(
+            "Binance funding",
+            f"{bf['rate']*100:+.4f}%/8h",
+            f"{ann:+.1f}% ann",
+        )
+    else:
+        c3.metric("Binance funding", "—")
+    c3.markdown(_badge(bf["source"] if bf else None), unsafe_allow_html=True)
+
+    cgf = snap.get("coinglass_funding")
+    if cgf:
+        ann = cgf["rate"] * 3 * 365 * 100
+        c4.metric(
+            "Aggregated funding",
+            f"{cgf['rate']*100:+.4f}%/8h",
+            f"{ann:+.1f}% ann · OI-wtd",
+        )
+    else:
+        c4.metric("Aggregated funding", "—")
+    c4.markdown(_badge(cgf["source"] if cgf else None), unsafe_allow_html=True)
+
+    cgls = snap.get("coinglass_ls")
+    if cgls:
+        c5.metric(
+            "Long / Short",
+            f"{cgls['ratio']:.2f}x",
+            f"L {cgls['long_pct']:.0f}% · S {cgls['short_pct']:.0f}%",
+        )
+    else:
+        c5.metric("Long / Short", "—")
+    c5.markdown(_badge(cgls["source"] if cgls else None), unsafe_allow_html=True)
+
+    # Row 2 — open interest (Binance / Deribit / Coinglass) + liquidations
+    d1, d2, d3, d4 = st.columns(4)
+
+    boi = snap.get("binance_oi")
+    if boi:
+        d1.metric(
+            "Binance OI",
+            f"{boi['oi_base']:,.0f} BTC",
+            _fmt_money(boi["oi_usd"]),
+        )
+    else:
+        d1.metric("Binance OI", "—")
+    d1.markdown(_badge(boi["source"] if boi else None), unsafe_allow_html=True)
+
+    doi = snap.get("deribit_oi")
+    if doi:
+        d2.metric(
+            "Deribit perp OI",
+            f"{doi['oi_base']:,.0f} BTC",
+            _fmt_money(doi["oi_usd"]),
+        )
+    else:
+        d2.metric("Deribit perp OI", "—")
+    d2.markdown(_badge(doi["source"] if doi else None), unsafe_allow_html=True)
+
+    cgoi = snap.get("coinglass_oi")
+    if cgoi:
+        d3.metric(
+            "Aggregated OI",
+            _fmt_money(cgoi["oi_usd"]),
+            f"{cgoi['change_pct']:+.2f}%",
+        )
+    else:
+        d3.metric("Aggregated OI", "—")
+    d3.markdown(_badge(cgoi["source"] if cgoi else None), unsafe_allow_html=True)
+
+    cgliq = snap.get("coinglass_liq")
+    if cgliq:
+        d4.metric(
+            "Liquidations 1h",
+            _fmt_money(cgliq["long_liq_usd"] + cgliq["short_liq_usd"]),
+            f"L {cgliq['long_liq_usd']/1e6:.1f}M · S {cgliq['short_liq_usd']/1e6:.1f}M",
+        )
+    else:
+        d4.metric("Liquidations 1h", "—")
+    d4.markdown(_badge(cgliq["source"] if cgliq else None), unsafe_allow_html=True)
+
+    # Status caption
+    cs = snap.get("coinglass_status", {})
+    if not cs.get("has_api_key"):
+        st.caption(
+            "ℹ️ Coinglass API key not set — aggregated metrics use mock data. "
+            "Set `COINGLASS_API_KEY` in DigitalOcean → App Settings → Environment Variables to enable live aggregations."
+        )
+    elif cs.get("error"):
+        st.caption(f"⚠️ Coinglass auth set but call failed: {cs['error']}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATA-MISSING DETECTION
 # ─────────────────────────────────────────────────────────────────────────────
 def _is_data_missing(inp: dict) -> tuple[bool, str]:
@@ -459,7 +743,19 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    # Pull a live snapshot first — used both for the snapshot panel and as
+    # default values where the sidebar would otherwise show stale numbers.
+    snap = _live_snapshot()
+    _render_live_snapshot(snap)
+
     inp = _sidebar_inputs()
+
+    # If the sidebar spot is the default 74_200 and live spot is available,
+    # silently substitute live spot so the rest of the page reflects market.
+    bs = snap.get("binance_spot")
+    if bs and abs(float(inp["spot"]) - 74_200.0) < 1e-6:
+        inp["spot"] = float(bs["price"])
+
     missing, why = _is_data_missing(inp)
 
     if missing:
@@ -477,59 +773,88 @@ def main() -> None:
         st.caption("Position size = 0% (failsafe).")
         return
 
-    # Build a RegimeAssessment from sidebar so the upstream pipeline runs end-to-end.
-    regime = RegimeAssessment(
-        regime=inp["regime_label"],
-        confidence=float(inp["regime_conf"]),
-        direction=None,
-        scores={inp["regime_label"]: float(inp["regime_conf"])},
-        rationale={inp["regime_label"]: ["Provided manually via sidebar"]},
-    )
+    # ── Live mode: pipeline drives everything ─────────────────────────────
+    pipeline_result: Optional[PipelineResult] = None
+    if inp.get("live_mode"):
+        try:
+            pipe = _cached_pipeline(
+                capital=float(inp["capital"]),
+                primary_tf=str(inp["primary_tf"]),
+                nearest_support=float(inp["nearest_support"]),
+                nearest_resistance=float(inp["nearest_resistance"]),
+            )
+            pipeline_result = pipe["result"]
+        except Exception as exc:
+            st.warning(f"Live pipeline failed ({exc}). Falling back to slider inputs.")
 
-    rec = evaluate_recommendation(
-        RecommendationInputs(
-            score_1h=float(inp["score_1h"]),
-            score_4h=float(inp["score_4h"]),
-            regime_4h=regime,
-            stable_1h=bool(inp["stable_1h"]),
-            stable_4h=bool(inp["stable_4h"]),
-            atm_iv_pct=float(inp["atm_iv"]),
-            primary_timeframe=str(inp["primary_tf"]),
+    if pipeline_result is not None:
+        rec = pipeline_result.recommendation
+        plan = pipeline_result.trade_plan
+        regime = pipeline_result.regime
+        score_1h_used = pipeline_result.score_1h
+        score_4h_used = pipeline_result.score_4h
+        spot_used = pipeline_result.spot if pipeline_result.spot > 0 else float(inp["spot"])
+        atm_iv_used = pipeline_result.atm_iv_pct
+        stable_1h_used = pipeline_result.stable_1h
+        stable_4h_used = pipeline_result.stable_4h
+    else:
+        # Manual / slider mode (failsafe or live mode disabled)
+        regime = RegimeAssessment(
+            regime=inp["regime_label"],
+            confidence=float(inp["regime_conf"]),
+            direction=None,
+            scores={inp["regime_label"]: float(inp["regime_conf"])},
+            rationale={inp["regime_label"]: ["Provided manually via sidebar"]},
         )
-    )
-
-    plan = build_trade_plan(
-        SizingInputs(
-            bias=rec.bias,
-            setup=rec.setup,
-            conviction=rec.conviction,
-            capital=float(inp["capital"]),
-            spot=float(inp["spot"]),
-            atm_iv_pct=float(inp["atm_iv"]),
-            stable_1h=bool(inp["stable_1h"]),
-            stable_4h=bool(inp["stable_4h"]),
-            nearest_support=(float(inp["nearest_support"]) if inp["nearest_support"] > 0 else None),
-            nearest_resistance=(float(inp["nearest_resistance"]) if inp["nearest_resistance"] > 0 else None),
+        rec = evaluate_recommendation(
+            RecommendationInputs(
+                score_1h=float(inp["score_1h"]),
+                score_4h=float(inp["score_4h"]),
+                regime_4h=regime,
+                stable_1h=bool(inp["stable_1h"]),
+                stable_4h=bool(inp["stable_4h"]),
+                atm_iv_pct=float(inp["atm_iv"]),
+                primary_timeframe=str(inp["primary_tf"]),
+            )
         )
-    )
+        plan = build_trade_plan(
+            SizingInputs(
+                bias=rec.bias,
+                setup=rec.setup,
+                conviction=rec.conviction,
+                capital=float(inp["capital"]),
+                spot=float(inp["spot"]),
+                atm_iv_pct=float(inp["atm_iv"]),
+                stable_1h=bool(inp["stable_1h"]),
+                stable_4h=bool(inp["stable_4h"]),
+                nearest_support=(float(inp["nearest_support"]) if inp["nearest_support"] > 0 else None),
+                nearest_resistance=(float(inp["nearest_resistance"]) if inp["nearest_resistance"] > 0 else None),
+            )
+        )
+        score_1h_used = float(inp["score_1h"])
+        score_4h_used = float(inp["score_4h"])
+        spot_used = float(inp["spot"])
+        atm_iv_used = float(inp["atm_iv"])
+        stable_1h_used = bool(inp["stable_1h"])
+        stable_4h_used = bool(inp["stable_4h"])
 
     kelly = kelly_sizing(
-        score_4h=float(inp["score_4h"]),
+        score_4h=score_4h_used,
         conviction=rec.conviction,
         bias=rec.bias,
-        stable=bool(inp["stable_1h"] and inp["stable_4h"]),
+        stable=bool(stable_1h_used and stable_4h_used),
         odds=float(inp["odds"]),
     )
 
     # 1. Quadrant — primary visual
-    _render_quadrant(float(inp["score_4h"]), rec.conviction, rec.bias)
+    _render_quadrant(score_4h_used, rec.conviction, rec.bias)
 
     # 2. Key metrics row
     _render_metrics_row(
-        spot=float(inp["spot"]),
-        score_1h=float(inp["score_1h"]),
-        score_4h=float(inp["score_4h"]),
-        regime=rec.setup if rec.setup != "none" else inp["regime_label"],
+        spot=spot_used,
+        score_1h=score_1h_used,
+        score_4h=score_4h_used,
+        regime=rec.setup if rec.setup != "none" else regime.regime,
         conviction=rec.conviction,
         bias=rec.bias,
     )
@@ -542,6 +867,20 @@ def main() -> None:
 
     # 5. Reasoning
     _render_reasoning(rec)
+
+    # 6. Live signal table (transparency) — only shown in live mode
+    if pipeline_result is not None and not pipeline_result.signal_table.empty:
+        st.markdown(_label("Live Signal Table"), unsafe_allow_html=True)
+        st.caption(
+            "Per-signal contributions feeding the 4h composite. "
+            "Each `value` is normalised to [-1, +1]. "
+            "Positive = bullish, negative = bearish, 0 = neutral / no data."
+        )
+        st.dataframe(
+            pipeline_result.signal_table,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 main()

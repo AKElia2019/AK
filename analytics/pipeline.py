@@ -56,6 +56,8 @@ from analytics.recommendation import (
     evaluate_recommendation,
 )
 from analytics.position_sizing import SizingInputs, TradePlan, build_trade_plan
+from analytics.gex import GEXResult, compute_gex
+from analytics.rn_pdf import compute_rn_pdf
 
 from data.spot import fetch_binance_spot_ticker
 from data.futures import (
@@ -89,6 +91,10 @@ class PipelineResult:
     score_1h: float
     score_4h: float
     composite_4h: CompositeScore
+
+    # GEX
+    gex: Optional[GEXResult]
+    gex_normalized: float  # in [-1, +1]
 
     # Stability flags (placeholder — true smoothing/EMA across snapshots
     # will be added once the pipeline is invoked from a stateful caller).
@@ -140,43 +146,56 @@ def _sig(name: str, value: float, weight: float = 1.0) -> dict:
 # OPTIONS-FAMILY SIGNALS
 # ─────────────────────────────────────────────────────────────────────────────
 def _compute_rn_stats(chain: pd.DataFrame, spot: float) -> dict:
-    """Lightweight RN stats from the option chain — uses ATM forward mean
-    as a proxy for RN mean and P(above spot) when a full BL fit isn't
-    available. Placeholder until we port the full Breeden–Litzenberger
-    routine into this scaffold.
+    """Real Breeden–Litzenberger RN density from the option chain.
+
+    Deribit option marks are quoted in BTC, so we convert to USD by
+    multiplying by spot before fitting BL. Returns ATM IV, RN mean, RN
+    std, RN skew, RN mode, and P(price > spot) at expiry. If the BL fit
+    fails (insufficient strikes, scipy missing, mock chain), falls back
+    to a lightweight wing-skew + ATM-IV proxy.
     """
+    out = {
+        "rn_mean": None, "rn_std": None, "p_above": None,
+        "atm_iv": None, "skew": None, "rn_full": None,
+    }
     if chain is None or chain.empty or spot <= 0:
-        return {"rn_mean": None, "p_above": None, "atm_iv": None, "skew": None}
+        return out
 
-    sub = chain.dropna(subset=["iv", "strike"])
+    sub = chain.dropna(subset=["iv", "strike"]).copy()
     if sub.empty:
-        return {"rn_mean": None, "p_above": None, "atm_iv": None, "skew": None}
+        return out
 
-    # ATM IV
+    # ATM IV (always computable)
     atm_idx = (sub["strike"] - spot).abs().idxmin()
     atm_strike = float(sub.loc[atm_idx, "strike"])
     atm_iv_pct = float(sub.loc[sub["strike"] == atm_strike, "iv"].mean())
+    out["atm_iv"] = atm_iv_pct
 
-    # Quick skew proxy: 90% put IV − 110% call IV (in pp). Same direction
-    # as the true RN-density skew sign for small samples.
+    # Convert Deribit BTC-marks to USD before BL
+    bl_input = sub.copy()
+    if "mark" in bl_input.columns and "venue" in bl_input.columns:
+        # Deribit chain: mark is in BTC → multiply by spot. Binance-options:
+        # mark is already in USD. We tag by venue to decide.
+        is_deribit = bl_input["venue"].astype(str).str.lower() == "deribit"
+        bl_input.loc[is_deribit, "mark"] = (
+            pd.to_numeric(bl_input.loc[is_deribit, "mark"], errors="coerce") * float(spot)
+        )
+
+    bl = compute_rn_pdf(bl_input, spot)
+    if bl is not None:
+        out["rn_mean"] = float(bl["mean"])
+        out["rn_std"] = float(bl["std"])
+        out["p_above"] = float(bl["p_above_spot"])
+        out["skew"] = float(bl["skew"])  # already a unitless RN skew
+        out["rn_full"] = bl
+        return out
+
+    # Fallback: wing-skew proxy
     p_wing = sub[(sub["type"].astype(str).str.upper() == "PUT") & (sub["strike"] <= atm_strike * 0.92)]
     c_wing = sub[(sub["type"].astype(str).str.upper() == "CALL") & (sub["strike"] >= atm_strike * 1.08)]
-    skew_pp = None
     if not p_wing.empty and not c_wing.empty:
-        skew_pp = float(c_wing["iv"].mean() - p_wing["iv"].mean()) / 4.0
-        # / 4 to roughly map ±4pp wing-skew to ±1 (positive RR ⇒ bullish)
-
-    # Crude RN mean / P(above) from call-side moneyness — ATM-only proxy.
-    # For a serious estimate, port BL from the legacy dashboard.
-    rn_mean = None
-    p_above = None
-
-    return {
-        "rn_mean": rn_mean,
-        "p_above": p_above,
-        "atm_iv": atm_iv_pct,
-        "skew": skew_pp,
-    }
+        out["skew"] = float(c_wing["iv"].mean() - p_wing["iv"].mean()) / 4.0
+    return out
 
 
 def _options_signals(chain: pd.DataFrame, spot: float, rn_stats: dict) -> list[dict]:
@@ -340,6 +359,16 @@ def run_pipeline(
     rn_stats = _compute_rn_stats(chain, spot)
     atm_iv = rn_stats.get("atm_iv")
 
+    # ── Dealer gamma exposure ─────────────────────────────────────────────
+    gex_result = compute_gex(chain, spot) if (chain is not None and not chain.empty) else None
+    if gex_result is not None:
+        # Saturation: ±5B USD/% is a strong threshold for BTC. Adjustable via
+        # `normalize_gex` keyword if needed.
+        from analytics.normalization import normalize_gex
+        gex_norm = normalize_gex(gex_result.gex_usd_per_pct, gex_threshold_usd=5.0e9)
+    else:
+        gex_norm = 0.0
+
     # ── Per-timeframe scoring ─────────────────────────────────────────────
     sigs_1h, sources_1h = _features_for_timeframe(
         "1h", kl_1h, oi_1h, funding, cg_oi, cg_funding, cg_ls, cg_liq, chain, spot, rn_stats
@@ -365,16 +394,16 @@ def run_pipeline(
         options_score=composite_4h.sub_scores["options"].score,
         futures_score=composite_4h.sub_scores["futures"].score,
         spot_score=composite_4h.sub_scores["spot"].score,
-        gex_normalized=0.0,                       # GEX not computed yet
+        gex_normalized=gex_norm,
         funding_normalized=normalize_funding(_last_value(funding, "funding_rate") or 0.0),
         volume_confirmation=next(
             (s["value"] for s in sigs_4h["spot"] if s["name"] == "volume_confirmation"),
             0.0,
         ),
-        rn_drift_normalized=0.0,                  # RN drift requires history
+        rn_drift_normalized=0.0,                  # RN drift requires snapshot history
         rn_mean=rn_stats.get("rn_mean"),
         spot=spot,
-        rn_std=None,
+        rn_std=rn_stats.get("rn_std"),
         funding_annualized_pct=(_last_value(funding, "funding_rate") or 0.0) * 3 * 365 * 100,
         oi_pct_change=_safe_pct_change(oi_4h, "oi_base"),
         spot_pct_change=_safe_pct_change(kl_4h, "close"),
@@ -435,6 +464,8 @@ def run_pipeline(
         score_1h=score_1h,
         score_4h=score_4h,
         composite_4h=composite_4h,
+        gex=gex_result,
+        gex_normalized=gex_norm,
         stable_1h=stable_1h,
         stable_4h=stable_4h,
         regime=regime,

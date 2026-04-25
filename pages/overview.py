@@ -278,16 +278,39 @@ def _fmt_money(x: Optional[float]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner="Running live pipeline…")
 def _cached_pipeline(capital: float, primary_tf: str,
-                     nearest_support: float, nearest_resistance: float) -> dict:
-    """Cached wrapper. Returns a dict so the result is hashable for cache."""
+                     nearest_support: float, nearest_resistance: float,
+                     prev_rn_mean: Optional[float]) -> dict:
+    """Cached wrapper. Returns a dict so the result is hashable for cache.
+    `prev_rn_mean` is part of the cache key so a new RN snapshot busts the cache."""
     res: PipelineResult = run_pipeline(
         capital=capital,
         primary_timeframe=primary_tf,
         nearest_support=nearest_support if nearest_support > 0 else None,
         nearest_resistance=nearest_resistance if nearest_resistance > 0 else None,
+        prev_rn_mean=prev_rn_mean,
     )
-    # The PipelineResult is a frozen dataclass — we expose it directly.
     return {"result": res}
+
+
+def _get_prev_rn_mean() -> Optional[float]:
+    """Return the previous RN mean from session_state, if any."""
+    buf = st.session_state.get("rn_mean_buffer", [])
+    if not buf:
+        return None
+    return float(buf[-1])
+
+
+def _update_rn_buffer(curr: Optional[float], max_len: int = 30) -> None:
+    """Append the latest RN mean to a rolling session-state buffer."""
+    if curr is None or not np.isfinite(curr):
+        return
+    buf = st.session_state.get("rn_mean_buffer", [])
+    if buf and abs(buf[-1] - float(curr)) < 1e-6:
+        return  # no-op when nothing changed (avoids polluting the buffer)
+    buf.append(float(curr))
+    if len(buf) > max_len:
+        buf = buf[-max_len:]
+    st.session_state["rn_mean_buffer"] = buf
 
 
 def _sidebar_inputs() -> dict:
@@ -448,9 +471,9 @@ def _render_kelly_block(kelly: dict, capital: float) -> None:
 
 
 def _render_options_state(pipe) -> None:
-    """Live GEX + RN summary, sourced from the pipeline result."""
+    """Live GEX + RN summary + RN drift, sourced from the pipeline result."""
     st.markdown(_label("Options State"), unsafe_allow_html=True)
-    cols = st.columns(4)
+    cols = st.columns(5)
 
     # ATM IV
     iv = pipe.atm_iv_pct
@@ -471,6 +494,16 @@ def _render_options_state(pipe) -> None:
     else:
         cols[2].metric("P(above spot)", "—")
 
+    # RN drift (signed normalized)
+    drift = getattr(pipe, "rn_drift_normalized", 0.0)
+    buf = st.session_state.get("rn_mean_buffer", [])
+    if abs(drift) > 0.001:
+        direction = "drifting up" if drift > 0 else "drifting down"
+        cols[3].metric("RN drift", f"{drift:+.2f}", f"{direction} · {len(buf)} snaps")
+    else:
+        cols[3].metric("RN drift", "—",
+                       f"{len(buf)} snaps · need 2+ to detect drift")
+
     # GEX
     gex = pipe.gex
     if gex is not None:
@@ -479,7 +512,7 @@ def _render_options_state(pipe) -> None:
             "long γ · stable" if gex.gex_usd_per_pct > 0 else
             "short γ · fragile"
         )
-        cols[3].metric(
+        cols[4].metric(
             "Dealer GEX",
             f"{gex_b:+.2f} B$/1%",
             f"{regime_label} · {gex.n_options} contracts",
@@ -492,7 +525,7 @@ def _render_options_state(pipe) -> None:
         else:
             st.caption(f"Normalized GEX {pipe.gex_normalized:+.2f} (saturates at ±5B$/1%)")
     else:
-        cols[3].metric("Dealer GEX", "—")
+        cols[4].metric("Dealer GEX", "—")
 
 
 def _render_levels(plan: TradePlan) -> None:
@@ -871,13 +904,18 @@ def main() -> None:
     pipeline_result: Optional[PipelineResult] = None
     if inp.get("live_mode"):
         try:
+            prev_rn = _get_prev_rn_mean()
             pipe = _cached_pipeline(
                 capital=float(inp["capital"]),
                 primary_tf=str(inp["primary_tf"]),
                 nearest_support=float(inp["nearest_support"]),
                 nearest_resistance=float(inp["nearest_resistance"]),
+                prev_rn_mean=prev_rn,
             )
             pipeline_result = pipe["result"]
+            # Once we have a fresh RN mean, append it to the buffer so the
+            # next refresh has a "previous" to drift against.
+            _update_rn_buffer(pipeline_result.rn_mean)
         except Exception as exc:
             st.warning(f"Live pipeline failed ({exc}). Falling back to slider inputs.")
 
@@ -968,6 +1006,55 @@ def main() -> None:
 
     # 6. Reasoning + regime evidence
     _render_reasoning(rec, regime=regime)
+
+    # 6.5. Score-history chart (1h vs 4h, raw vs smoothed) in live mode
+    if pipeline_result is not None and not pipeline_result.history_4h.empty:
+        st.markdown(_label("Score History"), unsafe_allow_html=True)
+        fig = go.Figure()
+        h4 = pipeline_result.history_4h
+        if "composite" in h4.columns:
+            fig.add_trace(go.Scatter(
+                x=h4.index, y=h4["composite"],
+                mode="lines",
+                name="4h raw", line=dict(color=STONE, width=1, dash="dot"),
+                opacity=0.5,
+            ))
+        if "composite_smooth" in h4.columns:
+            fig.add_trace(go.Scatter(
+                x=h4.index, y=h4["composite_smooth"],
+                mode="lines",
+                name="4h smoothed (EMA 8)",
+                line=dict(color=GOLD, width=2.4),
+            ))
+        h1 = pipeline_result.history_1h
+        if not h1.empty and "composite_smooth" in h1.columns:
+            fig.add_trace(go.Scatter(
+                x=h1.index, y=h1["composite_smooth"],
+                mode="lines",
+                name="1h smoothed (EMA 12)",
+                line=dict(color=TEAL, width=1.6),
+            ))
+        fig.add_hline(y=0, line=dict(color=STONE, width=1, dash="dot"))
+        fig.add_hline(y=50, line=dict(color=TEAL, width=1, dash="dot"),
+                      annotation_text="long gate", annotation_font=dict(size=9, color=TEAL))
+        fig.add_hline(y=-50, line=dict(color=RED, width=1, dash="dot"),
+                      annotation_text="short gate", annotation_font=dict(size=9, color=RED))
+        fig.update_layout(
+            paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+            font=dict(family="DM Mono, monospace", color="#44403A", size=11),
+            height=260,
+            margin=dict(l=58, r=20, t=20, b=44),
+            xaxis=dict(title=None, gridcolor="#EDEBE6"),
+            yaxis=dict(title="Score", range=[-100, 100], gridcolor="#EDEBE6"),
+            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption(
+            f"Stability: 1h {'✓' if pipeline_result.stable_1h else '✗'} · "
+            f"4h {'✓' if pipeline_result.stable_4h else '✗'}. "
+            f"Stability = last 4 (1h) / 2 (4h) smoothed bars stay on the same side of zero "
+            f"with magnitude ≥ 5."
+        )
 
     # 7. Live signal table (transparency) — only shown in live mode
     if pipeline_result is not None and not pipeline_result.signal_table.empty:

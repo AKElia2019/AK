@@ -293,7 +293,7 @@ def _mock_trades(venue: str, symbol: str, limit: int) -> pd.DataFrame:
     sides = rng.choice(["buy", "sell"], size=limit, p=[0.51, 0.49])
     rows = [
         {
-            "time": pd.Timestamp(t, tz="UTC"),
+            "time": pd.Timestamp(t),
             "venue": venue,
             "symbol": symbol,
             "trade_id": f"mock-{i}",

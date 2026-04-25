@@ -358,7 +358,7 @@ def _mock_futures_klines(venue: str, symbol: str, interval: str, limit: int) -> 
     vol = np.abs(rng.normal(800, 250, size=limit))
     rows = [
         {
-            "time": pd.Timestamp(t, tz="UTC"),
+            "time": pd.Timestamp(t),
             "venue": venue,
             "symbol": symbol,
             "open": float(opens[i]),
@@ -381,7 +381,7 @@ def _mock_funding(venue: str, symbol: str, limit: int) -> pd.DataFrame:
     rates = rng.normal(0.0001, 0.00015, size=limit)
     rows = [
         {
-            "time": pd.Timestamp(t, tz="UTC"),
+            "time": pd.Timestamp(t),
             "venue": venue,
             "symbol": symbol,
             "funding_rate": float(rates[i]),
@@ -399,7 +399,7 @@ def _mock_oi(venue: str, symbol: str, period: str, limit: int) -> pd.DataFrame:
     if limit <= 1:
         oi_base = float(rng.normal(80000, 5000))
         row = {
-            "time": pd.Timestamp(end, tz="UTC"),
+            "time": pd.Timestamp(end),
             "venue": venue,
             "symbol": symbol,
             "oi_base": oi_base,
@@ -411,7 +411,7 @@ def _mock_oi(venue: str, symbol: str, period: str, limit: int) -> pd.DataFrame:
     base = 80000.0 + np.cumsum(rng.normal(0, 200, size=limit))
     rows = [
         {
-            "time": pd.Timestamp(t, tz="UTC"),
+            "time": pd.Timestamp(t),
             "venue": venue,
             "symbol": symbol,
             "oi_base": float(base[i]),

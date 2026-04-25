@@ -391,7 +391,7 @@ def _mock_price() -> pd.DataFrame:
 def _mock_series_times(interval: str, limit: int) -> list[pd.Timestamp]:
     secs = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 3600)
     end = datetime.now(tz=timezone.utc).replace(microsecond=0)
-    return [pd.Timestamp(end - timedelta(seconds=secs * (limit - i - 1)), tz="UTC") for i in range(limit)]
+    return [pd.Timestamp(end - timedelta(seconds=secs * (limit - i - 1))) for i in range(limit)]
 
 
 def _mock_oi(symbol: str, interval: str, limit: int) -> pd.DataFrame:

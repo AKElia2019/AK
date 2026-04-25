@@ -265,7 +265,7 @@ def _mock_klines(venue: str, symbol: str, interval: str, limit: int) -> pd.DataF
     vol = np.abs(rng.normal(50, 20, size=limit))
     rows = [
         {
-            "time": pd.Timestamp(t, tz="UTC"),
+            "time": pd.Timestamp(t),
             "venue": venue,
             "symbol": symbol,
             "open": float(opens[i]),

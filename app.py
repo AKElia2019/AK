@@ -1,28 +1,24 @@
 """
 btc_dashboard · app.py
-Landing page — Deribit-driven options-distribution overview, per-expiry.
+Landing page — Deribit-driven options view + spot / volume context.
 
-A sidebar dropdown lists every BTC expiry currently on Deribit. All four
-charts recompute against the selected expiry only:
+A sidebar dropdown lists every BTC expiry currently on Deribit. The
+options charts recompute against the selected expiry only:
 
   1. RN PDF (BL) overlaid with OI-adjusted RN PDF + means & P(above spot).
   2. Dealer GEX per strike (filtered to the selected expiry).
-  3. Time series — RN-mean − spot gap in absolute USD (RN + OI-adjusted),
-     keyed by expiry.
-  4. Time series — P(above spot), RN + OI-adjusted, keyed by expiry.
-
-Time-series charts build their history per expiry from `st.session_state`
-across page refreshes. Two snapshots minimum to draw a line.
+  3. Spot price candles + SMA stack + VWAP + volume bars (perp · 1h · 200 bars).
+  4. Volume profile (1h · 30 buckets).
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from analytics.gex import GEXResult, compute_gex
@@ -34,6 +30,7 @@ from charts.theme import (
     base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 from config import settings
+from data.futures import fetch_binance_perp_klines
 from utils.logger import get_logger
 
 
@@ -108,71 +105,6 @@ def _compute_for_expiry(chain_for_expiry: pd.DataFrame, spot: float):
     rn_oi = compute_oi_adjusted_pdf(bl_input, rn, spot) if rn is not None else None
     gex = compute_gex(chain_for_expiry, spot)
     return rn, rn_oi, gex
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HISTORY BUFFER  (per-session, keyed by expiry)
-# ─────────────────────────────────────────────────────────────────────────────
-_HIST_KEY = "landing_history_by_expiry"
-_HIST_MAX = 200
-
-
-def _expiry_key(expiry) -> str:
-    try:
-        return pd.Timestamp(expiry).isoformat()
-    except Exception:
-        return str(expiry)
-
-
-def _record_snapshot(expiry, spot: float,
-                     rn: Optional[dict], rn_oi: Optional[dict]) -> None:
-    if spot <= 0 or (rn is None and rn_oi is None):
-        return
-    key = _expiry_key(expiry)
-    store: dict = st.session_state.setdefault(_HIST_KEY, {})
-    buf: list[dict] = store.setdefault(key, [])
-
-    rn_mean = float(rn["mean"]) if rn is not None else None
-    rn_oi_mean = float(rn_oi["mean"]) if rn_oi is not None else None
-    p_above = float(rn["p_above_spot"]) if rn is not None else None
-    p_above_oi = (
-        float(rn_oi["p_above_spot"]) if rn_oi is not None else None
-    )
-
-    new = {
-        "ts": datetime.now(timezone.utc),
-        "spot": float(spot),
-        "rn_mean": rn_mean,
-        "rn_oi_mean": rn_oi_mean,
-        "p_above": p_above,
-        "p_above_oi": p_above_oi,
-        "gap_abs": (rn_mean - spot) if rn_mean is not None else None,
-        "gap_oi_abs": (rn_oi_mean - spot) if rn_oi_mean is not None else None,
-    }
-
-    if buf:
-        last = buf[-1]
-        same_spot = abs(last.get("spot", 0.0) - new["spot"]) < 1e-3
-        same_rn = (last.get("rn_mean") or 0.0) == (new["rn_mean"] or 0.0)
-        same_oi = (last.get("rn_oi_mean") or 0.0) == (new["rn_oi_mean"] or 0.0)
-        if same_spot and same_rn and same_oi:
-            return
-
-    buf.append(new)
-    if len(buf) > _HIST_MAX:
-        buf = buf[-_HIST_MAX:]
-    store[key] = buf
-    st.session_state[_HIST_KEY] = store
-
-
-def _history_df(expiry) -> pd.DataFrame:
-    store = st.session_state.get(_HIST_KEY, {})
-    buf = store.get(_expiry_key(expiry), [])
-    if not buf:
-        return pd.DataFrame()
-    df = pd.DataFrame(buf)
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    return df.sort_values("ts").reset_index(drop=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -308,84 +240,127 @@ def _chart_gex(gex: Optional[GEXResult], spot: float, expiry_label: str) -> None
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def _chart_gap_history(hist: pd.DataFrame, expiry_label: str) -> None:
-    if hist.empty:
-        st.caption(f"RN-mean gap history will populate after the next refresh ({expiry_label}).")
-        return
-    fig = go.Figure()
-    if hist["gap_abs"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=hist["ts"], y=hist["gap_abs"],
-            mode="lines+markers",
-            name="RN mean − Spot ($)",
-            line=dict(color=GOLD, width=2.2),
-            marker=dict(size=4, color=GOLD),
-            hovertemplate="%{x|%d %b %H:%M}<br>RN gap %{y:+,.0f}<extra></extra>",
-        ))
-    if hist["gap_oi_abs"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=hist["ts"], y=hist["gap_oi_abs"],
-            mode="lines+markers",
-            name="OI-adj mean − Spot ($)",
-            line=dict(color=TEAL, width=2.0, dash="dash"),
-            marker=dict(size=4, color=TEAL),
-            hovertemplate="%{x|%d %b %H:%M}<br>OI-adj gap %{y:+,.0f}<extra></extra>",
-        ))
-    fig.add_hline(y=0, line=dict(color=STONE, width=1, dash="dot"))
-    fig.update_layout(
-        **base_layout(
-            title=f"{expiry_label}  ·  RN mean − spot gap (USD)  ·  {len(hist)} snapshots",
-            height=320,
-        ),
-        xaxis=dict(title=None, gridcolor=GRID),
-        yaxis=dict(title="Gap ($)", gridcolor=GRID),
-        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+# ─────────────────────────────────────────────────────────────────────────────
+# SPOT / VOLUME  (perp klines)
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner=False)
+def _klines(interval: str, limit: int) -> pd.DataFrame:
+    return fetch_binance_perp_klines(interval=interval, limit=limit)
 
 
-def _chart_p_above_history(hist: pd.DataFrame, expiry_label: str) -> None:
-    if hist.empty:
-        st.caption(f"P(above spot) history will populate after the next refresh ({expiry_label}).")
+def _chart_spot_volume(interval: str = "1h", limit: int = 200,
+                       sma_short: int = 20, sma_mid: int = 50,
+                       sma_long: int = 200, vwap_window: int = 24) -> None:
+    df = _klines(interval, limit).copy()
+    if df.empty or len(df) < 5:
+        st.caption(f"No spot / volume data for {interval}.")
         return
-    fig = go.Figure()
-    if hist["p_above"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=hist["ts"], y=hist["p_above"] * 100,
-            mode="lines+markers",
-            name="RN P(above spot)",
-            line=dict(color=GOLD, width=2.2),
-            marker=dict(size=4, color=GOLD),
-            hovertemplate="%{x|%d %b %H:%M}<br>RN P %{y:.1f}%<extra></extra>",
-        ))
-    if hist["p_above_oi"].notna().any():
-        fig.add_trace(go.Scatter(
-            x=hist["ts"], y=hist["p_above_oi"] * 100,
-            mode="lines+markers",
-            name="OI-adj P(above spot)",
-            line=dict(color=TEAL, width=2.0, dash="dash"),
-            marker=dict(size=4, color=TEAL),
-            hovertemplate="%{x|%d %b %H:%M}<br>OI-adj P %{y:.1f}%<extra></extra>",
-        ))
-    fig.add_hline(y=50, line=dict(color=STONE, width=1, dash="dot"),
-                  annotation_text="50%", annotation_font=dict(color=STONE, size=9))
-    fig.update_layout(
-        **base_layout(
-            title=f"{expiry_label}  ·  P(above spot)  ·  {len(hist)} snapshots",
-            height=320,
-        ),
-        xaxis=dict(title=None, gridcolor=GRID),
-        yaxis=dict(title="Probability (%)", range=[0, 100], gridcolor=GRID),
-        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
+
+    closes = df["close"].astype(float)
+    highs = df["high"].astype(float)
+    lows = df["low"].astype(float)
+    opens = df["open"].astype(float)
+    vols = df["volume"].astype(float).replace(0.0, np.nan)
+    times = pd.to_datetime(df["time"], utc=True)
+
+    typ = (highs + lows + closes) / 3.0
+    pv = typ * vols
+    vwap = (pv.rolling(vwap_window, min_periods=vwap_window).sum()
+            / vols.rolling(vwap_window, min_periods=vwap_window).sum())
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.72, 0.28], vertical_spacing=0.04,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    fig.add_trace(go.Candlestick(
+        x=times, open=opens, high=highs, low=lows, close=closes,
+        increasing_line_color=BULL, decreasing_line_color=BEAR,
+        showlegend=False, name="Price",
+    ), row=1, col=1)
+
+    for window, color, label in (
+        (sma_short, GOLD, f"SMA{sma_short}"),
+        (sma_mid, AMBER, f"SMA{sma_mid}"),
+        (sma_long, STONE, f"SMA{sma_long}"),
+    ):
+        sma = closes.rolling(window, min_periods=window).mean()
+        fig.add_trace(go.Scatter(x=times, y=sma, mode="lines", name=label,
+                                 line=dict(color=color, width=1.4)),
+                      row=1, col=1)
+    fig.add_trace(go.Scatter(x=times, y=vwap, mode="lines",
+                             name=f"VWAP({vwap_window})",
+                             line=dict(color=TEAL, width=1.6, dash="dot")),
+                  row=1, col=1)
+
+    bar_colors = [BULL if c >= o else BEAR for c, o in zip(closes, opens)]
+    fig.add_trace(go.Bar(x=times, y=df["volume"].astype(float),
+                         marker=dict(color=bar_colors, line=dict(width=0)),
+                         showlegend=False, name="Volume"),
+                  row=2, col=1)
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="JetBrains Mono, monospace", color=INK, size=11),
+        height=560, margin=dict(l=58, r=20, t=30, b=44),
+        title=dict(
+            text=f"BTC perp · {interval} · last {len(df)} bars",
+            font=dict(size=12, color=INK), x=0.0, xanchor="left",
+        ),
+        legend=dict(orientation="h", yanchor="top", y=1.06,
+                    xanchor="left", x=0),
+        xaxis=dict(rangeslider=dict(visible=False), gridcolor=GRID),
+        xaxis2=dict(gridcolor=GRID, title=None),
+        yaxis=dict(gridcolor=GRID, title="Price ($)"),
+        yaxis2=dict(gridcolor=GRID, title="Volume"),
+    )
+    st.plotly_chart(fig, use_container_width=True,
+                    config={"displayModeBar": False})
+
+
+def _chart_volume_profile(interval: str = "1h", limit: int = 200,
+                          buckets: int = 30) -> None:
+    df = _klines(interval, limit)
+    if df.empty:
+        st.caption("Volume profile unavailable.")
+        return
+    typical = (df["high"].astype(float)
+               + df["low"].astype(float)
+               + df["close"].astype(float)) / 3.0
+    bins = np.linspace(typical.min(), typical.max(), buckets + 1)
+    df_b = pd.DataFrame({"price": typical,
+                         "volume": df["volume"].astype(float)})
+    df_b["bucket"] = pd.cut(df_b["price"], bins=bins, include_lowest=True)
+    profile = (df_b.groupby("bucket", observed=True)["volume"]
+               .sum().reset_index())
+    profile["mid"] = profile["bucket"].apply(
+        lambda b: (b.left + b.right) / 2 if hasattr(b, "left") else 0
+    )
+
+    fig = go.Figure(go.Bar(
+        x=profile["volume"], y=profile["mid"], orientation="h",
+        marker=dict(color=GOLD, opacity=0.7, line=dict(width=0)),
+        hovertemplate="$%{y:,.0f}<br>volume %{x:,.0f}<extra></extra>",
+        showlegend=False,
+    ))
+    last_close = float(df["close"].astype(float).iloc[-1])
+    fig.add_hline(y=last_close, line=dict(color=INK, width=1.4, dash="dot"),
+                  annotation_text=f" Spot ${last_close:,.0f}",
+                  annotation_font=dict(color=INK, size=10))
+    fig.update_layout(
+        **base_layout(title=f"Volume profile · {interval} · {buckets} buckets",
+                      height=420),
+        xaxis=dict(title="Volume (BTC)", gridcolor=GRID),
+        yaxis=dict(title="Price ($)", gridcolor=GRID),
+    )
+    st.plotly_chart(fig, use_container_width=True,
+                    config={"displayModeBar": False})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
-def _sidebar(spot: float, atm_iv: Optional[float], chain: pd.DataFrame,
-             selected_expiry, expiry_key: str) -> None:
+def _sidebar(spot: float, atm_iv: Optional[float]) -> None:
     sb = st.sidebar
     sb.markdown("### Status")
     sb.caption(f"App: {settings.app_title}")
@@ -401,19 +376,6 @@ def _sidebar(spot: float, atm_iv: Optional[float], chain: pd.DataFrame,
     sb.markdown("### Snapshot")
     sb.caption(f"Spot: {fmt_money(spot)}")
     sb.caption(f"ATM IV: {atm_iv:.1f}%" if atm_iv is not None else "ATM IV: —")
-
-    sb.markdown("---")
-    sb.markdown("### History (per expiry)")
-    store = st.session_state.get(_HIST_KEY, {})
-    n = len(store.get(expiry_key, []))
-    sb.caption(f"{n} snapshots stored for selected expiry")
-    if sb.button("Clear history (this expiry)", use_container_width=True):
-        store[expiry_key] = []
-        st.session_state[_HIST_KEY] = store
-        st.rerun()
-    if sb.button("Clear ALL expiries", use_container_width=True):
-        st.session_state[_HIST_KEY] = {}
-        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -462,21 +424,16 @@ def main() -> None:
             index=0,
             format_func=lambda e: _format_expiry_label(e, chain),
             key="landing_expiry",
-            help="All four charts below recompute against the selected Deribit expiry.",
+            help="The two options charts below recompute against the selected Deribit expiry.",
         )
     expiry_label = _format_expiry_label(selected, chain)
-    expiry_key = _expiry_key(selected)
 
     # Sidebar
-    _sidebar(spot, atm_iv, chain, selected, expiry_key)
+    _sidebar(spot, atm_iv)
 
     # ── Compute per-expiry curves ────────────────────────────────────────
     chain_sel = _filter_chain(chain, selected)
     rn, rn_oi, gex = _compute_for_expiry(chain_sel, spot)
-
-    # Persist a snapshot for the selected expiry's history series
-    _record_snapshot(selected, spot, rn, rn_oi)
-    hist = _history_df(selected)
 
     # Per-expiry summary metrics
     cols2 = st.columns(3)
@@ -502,21 +459,20 @@ def main() -> None:
     st.markdown(section_label("Dealer GEX by Strike"), unsafe_allow_html=True)
     _chart_gex(gex, spot, expiry_label)
 
-    # 3) RN-mean − spot gap history
-    st.markdown(section_label("RN-Mean − Spot Gap (USD, over time)"),
+    # 3) Spot · SMA · VWAP · Volume
+    st.markdown(section_label("Price + SMA + VWAP + Volume"),
                 unsafe_allow_html=True)
-    _chart_gap_history(hist, expiry_label)
+    _chart_spot_volume(interval="1h", limit=200, vwap_window=24)
 
-    # 4) P(above spot) history
-    st.markdown(section_label("P(above spot) History"), unsafe_allow_html=True)
-    _chart_p_above_history(hist, expiry_label)
+    # 4) Volume profile
+    st.markdown(section_label("Volume Profile"), unsafe_allow_html=True)
+    _chart_volume_profile(interval="1h", limit=200, buckets=30)
 
     st.caption(
-        "All four charts are filtered to the selected Deribit expiry. The "
+        "Options charts are filtered to the selected Deribit expiry. The "
         "OI-adjusted curve tilts the BL density by the smoothed open-interest "
         "profile — a positioning view, not a true risk-neutral density. "
-        "Time-series charts build per-expiry history from this browser session — "
-        "two refreshes minimum to draw a line. Switch expiry to see its own series."
+        "Spot context below is BTC perp · 1h · last 200 bars."
     )
 
 

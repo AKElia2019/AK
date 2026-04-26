@@ -479,14 +479,19 @@ def main() -> None:
     hist = _history_df(selected)
 
     # Per-expiry summary metrics
-    n_contracts = int(len(chain_sel))
-    cols2 = st.columns(4)
+    cols2 = st.columns(3)
     cols2[0].metric("Spot", fmt_money(spot))
-    cols2[1].metric("Chain rows", f"{n_contracts}")
-    cols2[2].metric("RN mean", fmt_money(rn["mean"]) if rn is not None else "—")
-    cols2[3].metric(
+    cols2[1].metric(
+        "RN mean",
+        fmt_money(rn["mean"]) if rn is not None else "—",
+        f"P(above spot) {rn['p_above_spot']*100:.1f}%" if rn is not None else None,
+        delta_color="off",
+    )
+    cols2[2].metric(
         "OI-adj mean",
         fmt_money(rn_oi["mean"]) if rn_oi is not None else "—",
+        f"P(above spot) {rn_oi['p_above_spot']*100:.1f}%" if rn_oi is not None else None,
+        delta_color="off",
     )
 
     # 1) RN PDF + OI-adjusted overlay

@@ -30,7 +30,8 @@ from analytics.pipeline import PipelineResult, run_pipeline
 from analytics.rn_pdf import compute_oi_adjusted_pdf, compute_rn_pdf
 from charts.theme import (
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    BULL, BEAR, BRAND, BRASS, GRID,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 from config import settings
 from utils.logger import get_logger
@@ -191,8 +192,8 @@ def _chart_rn_distributions(rn: Optional[dict], rn_oi: Optional[dict],
         pdf = np.asarray(rn["pdf"], dtype=float)
         if spot > 0:
             for mask, color in (
-                (K <= spot, "rgba(168,50,50,0.08)"),
-                (K >= spot, "rgba(26,122,107,0.08)"),
+                (K <= spot, "rgba(163,90,72,0.10)"),    # terracotta · downside
+                (K >= spot, "rgba(107,139,104,0.12)"),  # sage · upside
             ):
                 if mask.any():
                     xs = np.concatenate([[K[mask][0]], K[mask], [K[mask][-1]]])
@@ -247,8 +248,8 @@ def _chart_rn_distributions(rn: Optional[dict], rn_oi: Optional[dict],
 
     fig.update_layout(
         **base_layout(title=title, height=420),
-        xaxis=dict(title="BTC at expiry ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Probability density", gridcolor="#EDEBE6"),
+        xaxis=dict(title="BTC at expiry ($)", gridcolor=GRID),
+        yaxis=dict(title="Probability density", gridcolor=GRID),
         legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -297,8 +298,8 @@ def _chart_gex(gex: Optional[GEXResult], spot: float, expiry_label: str) -> None
                    f"{regime}  ·  {gex.n_options} contracts"),
             height=380,
         ),
-        xaxis=dict(title="Strike ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Per-strike GEX (B$/1%)", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike ($)", gridcolor=GRID),
+        yaxis=dict(title="Per-strike GEX (B$/1%)", gridcolor=GRID),
         yaxis2=dict(title="Cumulative GEX (B$/1%)", overlaying="y", side="right",
                     showgrid=False, tickfont=dict(color=GOLD)),
         legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="center", x=0.5),
@@ -336,8 +337,8 @@ def _chart_gap_history(hist: pd.DataFrame, expiry_label: str) -> None:
             title=f"{expiry_label}  ·  RN mean − spot gap (USD)  ·  {len(hist)} snapshots",
             height=320,
         ),
-        xaxis=dict(title=None, gridcolor="#EDEBE6"),
-        yaxis=dict(title="Gap ($)", gridcolor="#EDEBE6"),
+        xaxis=dict(title=None, gridcolor=GRID),
+        yaxis=dict(title="Gap ($)", gridcolor=GRID),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -373,8 +374,8 @@ def _chart_p_above_history(hist: pd.DataFrame, expiry_label: str) -> None:
             title=f"{expiry_label}  ·  P(above spot)  ·  {len(hist)} snapshots",
             height=320,
         ),
-        xaxis=dict(title=None, gridcolor="#EDEBE6"),
-        yaxis=dict(title="Probability (%)", range=[0, 100], gridcolor="#EDEBE6"),
+        xaxis=dict(title=None, gridcolor=GRID),
+        yaxis=dict(title="Probability (%)", range=[0, 100], gridcolor=GRID),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -425,6 +426,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    inject_global_css()
 
     log.info("Starting %s in %s mode", settings.app_title, settings.environment)
 

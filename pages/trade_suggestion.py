@@ -44,14 +44,13 @@ from analytics.regime import RegimeAssessment  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THEME
+# THEME · pulled from charts.theme so all pages share the Maison palette
 # ─────────────────────────────────────────────────────────────────────────────
-GOLD  = "#C9A55A"
-TEAL  = "#1A7A6B"
-RED   = "#A83232"
-AMBER = "#B8832A"
-STONE = "#9C968A"
-INK   = "#1C1A17"
+from charts.theme import (    # noqa: E402
+    GOLD, TEAL, RED, AMBER, STONE, INK,
+    BULL, BEAR, BRAND, BRASS,
+    inject_global_css,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,11 +295,16 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    inject_global_css()
 
     st.markdown(
-        f'<h1 style="font-family:DM Sans,sans-serif;font-weight:300;'
-        f'color:{INK};margin:0 0 4px 0;">Trade Suggestion</h1>'
-        f'<div style="font-family:DM Mono,monospace;font-size:11px;color:{STONE};'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:10px;'
+        f'letter-spacing:0.26em;text-transform:uppercase;color:{BRAND};'
+        f'margin-bottom:10px;">Trade Suggestion · Live</div>'
+        f'<h1 style="font-family:Italiana,Cormorant Garamond,Georgia,serif;'
+        f'font-weight:400;font-size:64px;line-height:1.0;letter-spacing:-0.005em;'
+        f'color:{INK};margin:0 0 8px 0;">Trade Suggestion</h1>'
+        f'<div style="font-family:Inter,sans-serif;font-size:13px;color:{STONE};'
         f'margin-bottom:8px;">Live recommendation from the systematic pipeline · '
         f'edit the sidebar to explore.</div>',
         unsafe_allow_html=True,

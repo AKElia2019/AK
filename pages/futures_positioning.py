@@ -138,16 +138,25 @@ def _render_quadrant_scatter(res: PipelineResult) -> None:
     )
     oi_pct = oi_at_bar.pct_change().fillna(0) * 100
 
-    df = pd.DataFrame({"time": times, "spot_pct": spot_pct.values, "oi_pct": oi_pct.values}).tail(50)
+    df = pd.DataFrame({"time": times, "spot_pct": spot_pct.values, "oi_pct": oi_pct.values}).tail(50).reset_index(drop=True)
 
-    colors = [TEAL if (s > 0 and o > 0) else
-              RED if (s < 0 and o > 0) else
-              AMBER for s, o in zip(df["spot_pct"], df["oi_pct"])]
+    # Recency shading: oldest dot α=0.28, most recent α=1.0 — same fan logic
+    # as the forward RN-mean overlay on the landing page.
+    n = len(df)
+    colors: list[str] = []
+    for i, (s, o) in enumerate(zip(df["spot_pct"], df["oi_pct"])):
+        alpha = 0.28 + 0.72 * (i / max(n - 1, 1))
+        if s > 0 and o > 0:
+            colors.append(f"rgba(74,111,165,{alpha:.2f})")    # steel · new longs
+        elif s < 0 and o > 0:
+            colors.append(f"rgba(163,90,72,{alpha:.2f})")     # terracotta · new shorts
+        else:
+            colors.append(f"rgba(182,146,72,{alpha:.2f})")    # brass · unwind / cover
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df["spot_pct"], y=df["oi_pct"], mode="markers",
-        marker=dict(size=8, color=colors, line=dict(color="white", width=1)),
+        marker=dict(size=9, color=colors, line=dict(width=0)),
         text=df["time"].dt.strftime("%d %b %H:%M"),
         hovertemplate="%{text}<br>ΔSpot %{x:+.2f}%<br>ΔOI %{y:+.2f}%<extra></extra>",
         showlegend=False,

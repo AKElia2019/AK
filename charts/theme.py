@@ -20,28 +20,28 @@ from __future__ import annotations
 import streamlit as st
 
 
-# ── Palette (Maison) ─────────────────────────────────────────────────────────
-BG          = "#F4EFE5"   # warm oatmeal cream (page)
-BG_2        = "#EBE2D2"
-SURFACE     = "#FBF7EE"
-SURFACE_2   = "#F1EAD9"
+# ── Palette (Navy on Clean Beige) ────────────────────────────────────────────
+BG          = "#EFE7D6"   # clean beige (page) — single flat tone, no gradient
+BG_2        = BG          # kept for compat; identical to BG
+SURFACE     = BG
+SURFACE_2   = BG
 
-BRAND       = "#5C3B25"   # rich chocolate
-BRAND_DEEP  = "#3D2516"   # dark cocoa
-BRAND_SOFT  = "#E8DCCB"   # caramel cream
-BRAND_LINE  = "#C9B79E"
+BRAND       = "#1F3A5F"   # deep navy
+BRAND_DEEP  = "#14283F"   # darkest navy
+BRAND_SOFT  = "#DCE3EE"   # light navy tint
+BRAND_LINE  = "#B6C2D6"
 
-ACCENT      = "#A88560"   # warm taupe / camel
-ACCENT_BRIGHT = "#C9A578"
+ACCENT      = "#4A6FA5"   # steel blue
+ACCENT_BRIGHT = "#7A98C4"
 
 BRASS       = "#B69248"   # dusty gold accent (RN mean, runner, flip)
 BULL        = "#6B8B68"   # muted forest / olive sage
 BEAR        = "#A35A48"   # warm terracotta / clay red
 
 CREAM       = "#FAF6EC"
-INK         = "#2A1F15"   # deep warm charcoal-brown
-INK_DIM     = "#5A4A3C"
-STONE       = "#9C8F7E"   # warm grey-brown
+INK         = "#14283F"   # darkest navy · primary text
+INK_DIM     = "#3D5A80"   # mid-navy · secondary text
+STONE       = "#7A8AA0"   # muted blue-grey · tertiary / labels
 RULE        = "#DDD2BD"
 
 # ── Soft (alpha) versions used in chart fills ────────────────────────────────
@@ -78,18 +78,18 @@ def inject_global_css() -> None:
 
 <style>
 :root {
-  --bg:           #F4EFE5;
-  --bg-2:         #EBE2D2;
-  --surface:      #FBF7EE;
-  --surface-2:    #F1EAD9;
+  --bg:           #EFE7D6;
+  --bg-2:         #EFE7D6;
+  --surface:      #EFE7D6;
+  --surface-2:    #EFE7D6;
 
-  --brand:        #5C3B25;
-  --brand-deep:   #3D2516;
-  --brand-soft:   #E8DCCB;
-  --brand-line:   #C9B79E;
+  --brand:        #1F3A5F;
+  --brand-deep:   #14283F;
+  --brand-soft:   #DCE3EE;
+  --brand-line:   #B6C2D6;
 
-  --accent:       #A88560;
-  --accent-bright:#C9A578;
+  --accent:       #4A6FA5;
+  --accent-bright:#7A98C4;
 
   --brass:        #B69248;
   --brass-soft:   rgba(182,146,72,0.14);
@@ -98,9 +98,9 @@ def inject_global_css() -> None:
   --bear:         #A35A48;
   --bear-soft:    rgba(163,90,72,0.12);
 
-  --ink:          #2A1F15;
-  --ink-dim:      #5A4A3C;
-  --stone:        #9C8F7E;
+  --ink:          #14283F;
+  --ink-dim:      #3D5A80;
+  --stone:        #7A8AA0;
   --rule:         #DDD2BD;
 
   --display: 'Italiana', 'Cormorant Garamond', Georgia, serif;
@@ -121,19 +121,12 @@ def inject_global_css() -> None:
   --glass-blur-soft:   blur(20px) saturate(150%);
 }
 
-/* Warm villa-interior page wash — bokeh for the glass to refract */
+/* Flat clean beige page · single tone, no gradient, no bokeh */
 html, body, [data-testid="stAppViewContainer"], .stApp {
   font-family: var(--sans) !important;
   color: var(--ink) !important;
   font-feature-settings: 'tnum' on, 'lnum' on;
-  background:
-    radial-gradient(620px 620px at 12% 4%,    rgba(168,133,96,0.32),  transparent 60%),
-    radial-gradient(560px 560px at 92% 10%,   rgba(255,240,220,0.55), transparent 60%),
-    radial-gradient(720px 640px at 28% 98%,   rgba(92,59,37,0.22),    transparent 60%),
-    radial-gradient(540px 520px at 96% 92%,   rgba(182,146,72,0.22),  transparent 60%),
-    radial-gradient(440px 440px at 60% 50%,   rgba(163,90,72,0.10),   transparent 60%),
-    linear-gradient(135deg, var(--bg) 0%, var(--bg-2) 100%) !important;
-  background-attachment: fixed !important;
+  background: var(--bg) !important;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -146,10 +139,10 @@ h1, h2, h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
   letter-spacing: -0.005em;
 }
 
-/* Sidebar: deep chocolate rail */
+/* Sidebar: solid navy rail · single tone, no gradient */
 section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-deep) 100%) !important;
-  border-right: 1px solid rgba(45,30,18,0.18);
+  background: var(--brand) !important;
+  border-right: 1px solid rgba(20,40,63,0.18);
 }
 section[data-testid="stSidebar"] * {
   color: rgba(255,250,240,0.85) !important;
@@ -186,7 +179,8 @@ section[data-testid="stSidebar"] .stButton > button {
   color: #FAF6EC !important;
 }
 
-/* Metric tiles → frosted glass */
+/* Metric tiles → frosted glass · min-height keeps a row aligned even when
+   one tile has no delta */
 [data-testid="stMetric"] {
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
@@ -195,7 +189,13 @@ section[data-testid="stSidebar"] .stButton > button {
   border-radius: 6px;
   padding: 14px 16px;
   box-shadow: var(--glass-shadow);
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  height: 100%;
 }
+[data-testid="stMetric"] > div { height: 100%; display: flex; flex-direction: column; }
 [data-testid="stMetricLabel"] {
   font-family: var(--mono) !important;
   font-size: 9px !important;

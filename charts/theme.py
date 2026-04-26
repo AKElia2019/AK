@@ -53,9 +53,13 @@ BRASS_FILL  = "rgba(182,146,72,0.14)"
 # ── Chart-specific (warm rule for grids / dividers) ──────────────────────────
 GRID        = "#E5DCC9"
 
+# ── Chart line palette · dark blue shades for curves on warm bg ──────────────
+NAVY        = "#1F3A5F"   # deep navy — primary chart line (RN density, RN mean)
+STEEL       = "#4A6FA5"   # steel blue — secondary chart line (OI-adjusted)
+
 # ── Backwards-compatible aliases (so existing pages keep importing) ──────────
-GOLD  = BRAND       # was the RN-density colour → now chocolate
-TEAL  = ACCENT      # was the OI-adjusted colour → now taupe
+GOLD  = NAVY        # primary chart-line colour
+TEAL  = STEEL       # secondary chart-line colour
 RED   = BEAR
 AMBER = BRASS
 

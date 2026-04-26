@@ -248,7 +248,43 @@ def _klines(interval: str, limit: int) -> pd.DataFrame:
     return fetch_binance_perp_klines(interval=interval, limit=limit)
 
 
-def _chart_spot_volume(interval: str = "1h", limit: int = 200,
+def _expiry_means(chain: Optional[pd.DataFrame], spot: float) -> list[dict]:
+    """Compute RN-mean and OI-adjusted RN-mean for every upcoming Deribit
+    expiry. Returns a list of dicts sorted by ascending DTE."""
+    if chain is None or chain.empty or "expiry" not in chain.columns or spot <= 0:
+        return []
+    out: list[dict] = []
+    for exp in _available_expiries(chain):
+        try:
+            ts = pd.Timestamp(exp)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+        except Exception:
+            continue
+        sub = _filter_chain(chain, exp)
+        if sub.empty:
+            continue
+        if "dte" in sub.columns and sub["dte"].notna().any():
+            dte = float(sub["dte"].median())
+        else:
+            dte = (ts - pd.Timestamp.now(tz="UTC")).total_seconds() / 86400.0
+        if dte <= 0:
+            continue
+        rn, rn_oi, _gex = _compute_for_expiry(sub, spot)
+        if rn is None and rn_oi is None:
+            continue
+        out.append({
+            "expiry": ts,
+            "dte": dte,
+            "rn_mean": float(rn["mean"]) if rn is not None else None,
+            "oi_mean": float(rn_oi["mean"]) if rn_oi is not None else None,
+        })
+    out.sort(key=lambda r: r["dte"])
+    return out
+
+
+def _chart_spot_volume(chain: Optional[pd.DataFrame], spot: float,
+                       interval: str = "1h", limit: int = 200,
                        sma_short: int = 20, sma_mid: int = 50,
                        sma_long: int = 200, vwap_window: int = 24) -> None:
     df = _klines(interval, limit).copy()
@@ -299,18 +335,66 @@ def _chart_spot_volume(interval: str = "1h", limit: int = 200,
                          showlegend=False, name="Volume"),
                   row=2, col=1)
 
+    # ── Forward fan: RN mean + OI-adjusted mean for every upcoming expiry ─
+    means = _expiry_means(chain, spot)
+    t_now = times.iloc[-1]
+    t_max_axis = times.iloc[-1]
+    if means:
+        n = len(means)
+        for i, row_d in enumerate(means):
+            # Opacity: 1.0 (soonest) → 0.28 (furthest)
+            alpha = 1.0 - 0.72 * (i / max(n - 1, 1))
+            navy_c = f"rgba(31,58,95,{alpha:.2f})"
+            steel_c = f"rgba(74,111,165,{alpha:.2f})"
+            t_exp = row_d["expiry"]
+            label = f"{int(round(row_d['dte']))}d"
+
+            if row_d["rn_mean"] is not None:
+                fig.add_trace(go.Scatter(
+                    x=[t_now, t_exp], y=[row_d["rn_mean"], row_d["rn_mean"]],
+                    mode="lines+markers+text",
+                    line=dict(color=navy_c, width=1.4, dash="dot"),
+                    marker=dict(size=[0, 7], color=navy_c, symbol="diamond"),
+                    text=["", f"  {label}"],
+                    textfont=dict(color=navy_c, size=9,
+                                  family="JetBrains Mono"),
+                    textposition="middle right",
+                    showlegend=(i == 0),
+                    name="RN mean · forward expiries",
+                    hovertemplate=(f"Expiry {t_exp:%d %b %Y}<br>"
+                                   f"RN mean ${row_d['rn_mean']:,.0f}"
+                                   f"<extra>{label}</extra>"),
+                ), row=1, col=1)
+
+            if row_d["oi_mean"] is not None:
+                fig.add_trace(go.Scatter(
+                    x=[t_now, t_exp], y=[row_d["oi_mean"], row_d["oi_mean"]],
+                    mode="lines+markers",
+                    line=dict(color=steel_c, width=1.2, dash="dash"),
+                    marker=dict(size=[0, 6], color=steel_c,
+                                symbol="circle-open"),
+                    showlegend=(i == 0),
+                    name="OI-adj mean · forward expiries",
+                    hovertemplate=(f"Expiry {t_exp:%d %b %Y}<br>"
+                                   f"OI-adj mean ${row_d['oi_mean']:,.0f}"
+                                   f"<extra>{label}</extra>"),
+                ), row=1, col=1)
+        t_max_axis = max(row_d["expiry"] for row_d in means)
+
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="JetBrains Mono, monospace", color=INK, size=11),
         height=560, margin=dict(l=58, r=20, t=30, b=44),
         title=dict(
-            text=f"BTC perp · {interval} · last {len(df)} bars",
+            text=f"BTC perp · {interval} · last {len(df)} bars · forward RN-mean fan",
             font=dict(size=12, color=INK), x=0.0, xanchor="left",
         ),
         legend=dict(orientation="h", yanchor="top", y=1.06,
                     xanchor="left", x=0),
-        xaxis=dict(rangeslider=dict(visible=False), gridcolor=GRID),
-        xaxis2=dict(gridcolor=GRID, title=None),
+        xaxis=dict(rangeslider=dict(visible=False), gridcolor=GRID,
+                   range=[times.iloc[0], t_max_axis]),
+        xaxis2=dict(gridcolor=GRID, title=None,
+                    range=[times.iloc[0], t_max_axis]),
         yaxis=dict(gridcolor=GRID, title="Price ($)"),
         yaxis2=dict(gridcolor=GRID, title="Volume"),
     )
@@ -459,10 +543,11 @@ def main() -> None:
     st.markdown(section_label("Dealer GEX by Strike"), unsafe_allow_html=True)
     _chart_gex(gex, spot, expiry_label)
 
-    # 3) Spot · SMA · VWAP · Volume
+    # 3) Spot · SMA · VWAP · Volume + forward RN-mean fan
     st.markdown(section_label("Price + SMA + VWAP + Volume"),
                 unsafe_allow_html=True)
-    _chart_spot_volume(interval="1h", limit=200, vwap_window=24)
+    _chart_spot_volume(chain=chain, spot=spot,
+                       interval="1h", limit=200, vwap_window=24)
 
     # 4) Volume profile
     st.markdown(section_label("Volume Profile"), unsafe_allow_html=True)
@@ -472,7 +557,10 @@ def main() -> None:
         "Options charts are filtered to the selected Deribit expiry. The "
         "OI-adjusted curve tilts the BL density by the smoothed open-interest "
         "profile — a positioning view, not a true risk-neutral density. "
-        "Spot context below is BTC perp · 1h · last 200 bars."
+        "Spot chart shows BTC perp · 1h · last 200 bars; the forward overlay "
+        "draws RN mean (solid · diamond) and OI-adjusted mean (dashed · "
+        "open circle) for every upcoming Deribit expiry — darker shade = "
+        "nearer expiry, lighter = further out."
     )
 
 

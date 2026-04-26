@@ -104,7 +104,9 @@ def _render_gex(res: PipelineResult) -> None:
                               line=dict(color=GOLD, width=2.0),
                               name="Cumulative", yaxis="y2"))
     if res.spot:
-        fig.add_vline(x=float(res.spot), line=dict(color=TEAL, width=1.4, dash="dot"))
+        fig.add_vline(x=float(res.spot), line=dict(color=INK, width=1.4, dash="dot"),
+                      annotation_text=f" Spot ${res.spot:,.0f}",
+                      annotation_font=dict(color=INK, size=10))
     if res.gex.flip_strike:
         fig.add_vline(x=res.gex.flip_strike, line=dict(color=AMBER, width=1.4, dash="dash"),
                       annotation_text=f" Flip ${res.gex.flip_strike:,.0f}",

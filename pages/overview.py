@@ -65,21 +65,20 @@ from data.coinglass import (                     # noqa: E402
 # End-to-end pipeline
 from analytics.pipeline import run_pipeline, PipelineResult  # noqa: E402
 
+from charts.theme import (    # noqa: E402
+    GOLD, TEAL, RED, AMBER, STONE, INK,
+    BULL, BEAR, BRAND, BRASS,
+    inject_global_css,
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THEME
+# THEME · quadrant zones use sage / terracotta soft fills
 # ─────────────────────────────────────────────────────────────────────────────
-GOLD  = "#C9A55A"
-TEAL  = "#1A7A6B"
-RED   = "#A83232"
-AMBER = "#B8832A"
-STONE = "#9C968A"
-INK   = "#1C1A17"
-
-GREEN_ZONE_STRONG = "rgba(26,122,107,0.12)"
-GREEN_ZONE_WEAK   = "rgba(26,122,107,0.04)"
-RED_ZONE_STRONG   = "rgba(168,50,50,0.12)"
-RED_ZONE_WEAK     = "rgba(168,50,50,0.04)"
+GREEN_ZONE_STRONG = "rgba(107,139,104,0.14)"
+GREEN_ZONE_WEAK   = "rgba(107,139,104,0.05)"
+RED_ZONE_STRONG   = "rgba(163,90,72,0.12)"
+RED_ZONE_WEAK     = "rgba(163,90,72,0.04)"
 
 
 # Conviction tier → numeric Y position (0..100) for the quadrant chart
@@ -232,20 +231,20 @@ def quadrant_chart(score_4h: float, conviction_tier: str, bias: str) -> go.Figur
 
     fig.update_layout(
         height=460,
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=60, r=20, t=20, b=60),
         font=dict(family="DM Mono, monospace", color="#44403A"),
         xaxis=dict(
             title=dict(text="Score   (Bearish ←        → Bullish)",
                        font=dict(size=11, color=STONE)),
-            range=[-100, 100], gridcolor="#EDEBE6",
+            range=[-100, 100], gridcolor="#E5DCC9",
             zeroline=False, tickvals=[-100, -50, 0, 50, 100],
         ),
         yaxis=dict(
             title=dict(text="Conviction   (Low ↓        ↑ High)",
                        font=dict(size=11, color=STONE)),
-            range=[0, 100], gridcolor="#EDEBE6",
+            range=[0, 100], gridcolor="#E5DCC9",
             zeroline=False, tickvals=[0, 25, 50, 75, 100],
         ),
     )
@@ -546,7 +545,7 @@ def _render_rn_pdf_chart(pipe) -> None:
     )
 
     fig.update_layout(
-        paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="DM Mono, monospace", color="#44403A", size=11),
         height=320,
         margin=dict(l=58, r=20, t=30, b=44),
@@ -554,8 +553,8 @@ def _render_rn_pdf_chart(pipe) -> None:
             text=f"P(price > spot) {p_above_pct} · skew {skew:+.2f} ({skew_label})",
             font=dict(size=12, color=INK), x=0.0, xanchor="left",
         ),
-        xaxis=dict(title="BTC at expiry ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Density", gridcolor="#EDEBE6"),
+        xaxis=dict(title="BTC at expiry ($)", gridcolor="#E5DCC9"),
+        yaxis=dict(title="Density", gridcolor="#E5DCC9"),
         showlegend=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -603,7 +602,7 @@ def _render_gex_chart(pipe) -> None:
     total_b = gex.gex_usd_per_pct / 1e9
     regime_label = "long γ · stable" if total_b > 0 else "short γ · fragile"
     fig.update_layout(
-        paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="DM Mono, monospace", color="#44403A", size=11),
         height=320,
         margin=dict(l=58, r=58, t=30, b=44),
@@ -612,8 +611,8 @@ def _render_gex_chart(pipe) -> None:
                   f"{gex.n_options} contracts"),
             font=dict(size=12, color=INK), x=0.0, xanchor="left",
         ),
-        xaxis=dict(title="Strike ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Per-strike GEX (B$/1%)", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike ($)", gridcolor="#E5DCC9"),
+        yaxis=dict(title="Per-strike GEX (B$/1%)", gridcolor="#E5DCC9"),
         yaxis2=dict(title="Cumulative GEX (B$/1%)", overlaying="y", side="right",
                     showgrid=False, tickfont=dict(color=GOLD)),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
@@ -1012,12 +1011,17 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    inject_global_css()
 
     st.markdown(
-        f'<h1 style="font-family:DM Sans,sans-serif;font-weight:300;'
-        f'color:{INK};margin:0 0 4px 0;">Overview</h1>'
-        f'<div style="font-family:DM Mono,monospace;font-size:11px;color:{STONE};'
-        f'margin-bottom:8px;">Decision interface · score × conviction quadrant · '
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:10px;'
+        f'letter-spacing:0.26em;text-transform:uppercase;color:{BRAND};'
+        f'margin-bottom:10px;">Decision Interface · Live</div>'
+        f'<h1 style="font-family:Italiana,Cormorant Garamond,Georgia,serif;'
+        f'font-weight:400;font-size:64px;line-height:1.0;letter-spacing:-0.005em;'
+        f'color:{INK};margin:0 0 8px 0;">Overview</h1>'
+        f'<div style="font-family:Inter,sans-serif;font-size:13px;color:{STONE};'
+        f'margin-bottom:18px;">Decision interface · score × conviction quadrant · '
         f'Kelly-sized recommendation</div>',
         unsafe_allow_html=True,
     )
@@ -1212,12 +1216,12 @@ def main() -> None:
         fig.add_hline(y=-50, line=dict(color=RED, width=1, dash="dot"),
                       annotation_text="short gate", annotation_font=dict(size=9, color=RED))
         fig.update_layout(
-            paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="DM Mono, monospace", color="#44403A", size=11),
             height=260,
             margin=dict(l=58, r=20, t=20, b=44),
-            xaxis=dict(title=None, gridcolor="#EDEBE6"),
-            yaxis=dict(title="Score", range=[-100, 100], gridcolor="#EDEBE6"),
+            xaxis=dict(title=None, gridcolor="#E5DCC9"),
+            yaxis=dict(title="Score", range=[-100, 100], gridcolor="#E5DCC9"),
             legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})

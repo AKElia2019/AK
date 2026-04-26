@@ -33,7 +33,7 @@ from analytics.journal import (        # noqa: E402
 from analytics.pipeline import run_pipeline   # noqa: E402
 from charts.theme import (                     # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 
 
@@ -581,8 +581,8 @@ def _render_stats(strategy: Strategy) -> None:
         fig.add_hline(y=0, line=dict(color=STONE, width=1, dash="dot"))
         fig.update_layout(
             **base_layout(title="Cumulative P&L (closed trades)", height=320),
-            xaxis=dict(title=None, gridcolor="#EDEBE6"),
-            yaxis=dict(title="P&L ($)", gridcolor="#EDEBE6"),
+            xaxis=dict(title=None, gridcolor="#E5DCC9"),
+            yaxis=dict(title="P&L ($)", gridcolor="#E5DCC9"),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -635,6 +635,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    inject_global_css()
     page_title("Trade Journal",
                "Log trades by strategy · futures · spot · options · build statistics")
 

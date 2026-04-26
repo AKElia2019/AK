@@ -21,7 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from charts.theme import (   # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, page_title, section_label,
+    base_layout, inject_global_css, page_title, section_label,
 )
 from analytics.pipeline import run_pipeline, PipelineResult  # noqa: E402
 from analytics.scoring import DEFAULT_FAMILY_WEIGHTS         # noqa: E402
@@ -34,6 +34,7 @@ def _pipe() -> dict:
 
 def main() -> None:
     st.set_page_config(page_title="Signal Engine · BTC", page_icon="₿", layout="wide")
+    inject_global_css()
     page_title("Signal Engine",
                "Per-signal · per-family · weighted composite breakdown")
 
@@ -113,8 +114,8 @@ def main() -> None:
         fig.add_hline(y=0, line=dict(color=STONE, width=1, dash="dot"))
         fig.update_layout(
             **base_layout(height=320),
-            xaxis=dict(title=None, gridcolor="#EDEBE6"),
-            yaxis=dict(title="Score", range=[-100, 100], gridcolor="#EDEBE6"),
+            xaxis=dict(title=None, gridcolor="#E5DCC9"),
+            yaxis=dict(title="Score", range=[-100, 100], gridcolor="#E5DCC9"),
             legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})

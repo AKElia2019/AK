@@ -19,7 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from charts.theme import (   # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 from analytics.pipeline import run_pipeline, PipelineResult  # noqa: E402
 
@@ -82,8 +82,8 @@ def _render_rn_pdf(res: PipelineResult) -> None:
         fig.add_vline(x=mode, line=dict(color=STONE, width=1.0, dash="dash"))
     fig.update_layout(**base_layout(title=f"Risk-Neutral Density · skew {rn.get('skew',0):+.2f}",
                                     height=340),
-                      xaxis=dict(title="BTC at expiry ($)", gridcolor="#EDEBE6"),
-                      yaxis=dict(title="Density", gridcolor="#EDEBE6"),
+                      xaxis=dict(title="BTC at expiry ($)", gridcolor="#E5DCC9"),
+                      yaxis=dict(title="Density", gridcolor="#E5DCC9"),
                       showlegend=False)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -112,8 +112,8 @@ def _render_gex(res: PipelineResult) -> None:
     fig.add_hline(y=0, line=dict(color=STONE, width=1, dash="dot"))
     fig.update_layout(**base_layout(title=f"GEX by strike · total {bar_b.sum():+.2f} B$/1%",
                                     height=340),
-                      xaxis=dict(title="Strike ($)", gridcolor="#EDEBE6"),
-                      yaxis=dict(title="GEX (B$/1%)", gridcolor="#EDEBE6"),
+                      xaxis=dict(title="Strike ($)", gridcolor="#E5DCC9"),
+                      yaxis=dict(title="GEX (B$/1%)", gridcolor="#E5DCC9"),
                       yaxis2=dict(title="Cumulative", overlaying="y", side="right",
                                   showgrid=False),
                       bargap=0.05,
@@ -165,8 +165,8 @@ def _render_smile(res: PipelineResult) -> None:
                       annotation_font=dict(color=GOLD, size=10))
     fig.update_layout(**base_layout(title=f"IV Smile · expiry {exp_label}",
                                     height=320),
-                      xaxis=dict(title="Strike ($)", gridcolor="#EDEBE6"),
-                      yaxis=dict(title="Implied Vol (%)", gridcolor="#EDEBE6"),
+                      xaxis=dict(title="Strike ($)", gridcolor="#E5DCC9"),
+                      yaxis=dict(title="Implied Vol (%)", gridcolor="#E5DCC9"),
                       legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -188,6 +188,7 @@ def _render_chain_table(res: PipelineResult) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Options Analytics · BTC", page_icon="₿", layout="wide")
+    inject_global_css()
     page_title("Options Analytics", "IV smile · RN density · dealer GEX · chain")
     res: PipelineResult = _pipe()["result"]
     _render_strip(res)

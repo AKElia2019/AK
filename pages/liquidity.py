@@ -19,7 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from charts.theme import (   # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, page_title, section_label,
+    base_layout, inject_global_css, page_title, section_label,
 )
 from data.liquidity import (   # noqa: E402
     fetch_binance_spot_order_book,
@@ -74,8 +74,8 @@ def _depth_chart(book: pd.DataFrame, venue: str) -> None:
                       annotation_font=dict(color=GOLD, size=10))
 
     fig.update_layout(**base_layout(title=f"{venue} · cumulative depth", height=320),
-                      xaxis=dict(title="Price ($)", gridcolor="#EDEBE6"),
-                      yaxis=dict(title="Size (BTC)", gridcolor="#EDEBE6"),
+                      xaxis=dict(title="Price ($)", gridcolor="#E5DCC9"),
+                      yaxis=dict(title="Size (BTC)", gridcolor="#E5DCC9"),
                       legend=dict(orientation="h", yanchor="top", y=-0.18,
                                   xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -128,6 +128,7 @@ def _render_book_summary(books_by_venue: dict) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Liquidity · BTC", page_icon="₿", layout="wide")
+    inject_global_css()
     page_title("Liquidity",
                "L2 depth · top-of-book · spread comparison across venues")
 

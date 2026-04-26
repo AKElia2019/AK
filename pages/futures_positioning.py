@@ -19,7 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from charts.theme import (   # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 from analytics.pipeline import run_pipeline, PipelineResult  # noqa: E402
 
@@ -91,8 +91,8 @@ def _render_funding_history(res: PipelineResult) -> None:
                   annotation_text=" extreme − (contrarian)",
                   annotation_font=dict(color=TEAL, size=9))
     fig.update_layout(**base_layout(title="Binance perp funding (annualised %)", height=300),
-                      xaxis=dict(title=None, gridcolor="#EDEBE6"),
-                      yaxis=dict(title="% annualised", gridcolor="#EDEBE6"))
+                      xaxis=dict(title=None, gridcolor="#E5DCC9"),
+                      yaxis=dict(title="% annualised", gridcolor="#E5DCC9"))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -112,8 +112,8 @@ def _render_oi_history(res: PipelineResult) -> None:
                                   mode="lines", name="OI 4h",
                                   line=dict(color=GOLD, width=2.2)))
     fig.update_layout(**base_layout(title="Binance perp open interest (BTC)", height=300),
-                      xaxis=dict(title=None, gridcolor="#EDEBE6"),
-                      yaxis=dict(title="OI (BTC)", gridcolor="#EDEBE6"),
+                      xaxis=dict(title=None, gridcolor="#E5DCC9"),
+                      yaxis=dict(title="OI (BTC)", gridcolor="#E5DCC9"),
                       legend=dict(orientation="h", yanchor="top", y=-0.18,
                                   xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -163,13 +163,14 @@ def _render_quadrant_scatter(res: PipelineResult) -> None:
     fig.add_annotation(x=-2, y=-2, text="Long unwind", showarrow=False,
                        font=dict(color=AMBER, size=11))
     fig.update_layout(**base_layout(title="OI / price quadrant (last 50 × 4h bars)", height=340),
-                      xaxis=dict(title="Δ Spot (%)", gridcolor="#EDEBE6", zeroline=False),
-                      yaxis=dict(title="Δ OI (%)", gridcolor="#EDEBE6", zeroline=False))
+                      xaxis=dict(title="Δ Spot (%)", gridcolor="#E5DCC9", zeroline=False),
+                      yaxis=dict(title="Δ OI (%)", gridcolor="#E5DCC9", zeroline=False))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
 def main() -> None:
     st.set_page_config(page_title="Futures Positioning · BTC", page_icon="₿", layout="wide")
+    inject_global_css()
     page_title("Futures Positioning", "Funding · OI · price-OI quadrant")
     res: PipelineResult = _pipe()["result"]
     st.markdown(section_label("Live Snapshot"), unsafe_allow_html=True)

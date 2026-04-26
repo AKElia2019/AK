@@ -20,7 +20,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from charts.theme import (   # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 from data.futures import fetch_binance_perp_klines  # noqa: E402
 
@@ -79,7 +79,7 @@ def _render_chart(interval: str, limit: int, sma_short: int = 20,
                   row=2, col=1)
 
     fig.update_layout(
-        paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="DM Mono, monospace", color="#44403A", size=11),
         height=560, margin=dict(l=58, r=20, t=30, b=44),
         title=dict(
@@ -87,10 +87,10 @@ def _render_chart(interval: str, limit: int, sma_short: int = 20,
             font=dict(size=12, color=INK), x=0.0, xanchor="left",
         ),
         legend=dict(orientation="h", yanchor="top", y=1.06, xanchor="left", x=0),
-        xaxis=dict(rangeslider=dict(visible=False), gridcolor="#EDEBE6"),
-        xaxis2=dict(gridcolor="#EDEBE6", title=None),
-        yaxis=dict(gridcolor="#EDEBE6", title="Price ($)"),
-        yaxis2=dict(gridcolor="#EDEBE6", title="Volume"),
+        xaxis=dict(rangeslider=dict(visible=False), gridcolor="#E5DCC9"),
+        xaxis2=dict(gridcolor="#E5DCC9", title=None),
+        yaxis=dict(gridcolor="#E5DCC9", title="Price ($)"),
+        yaxis2=dict(gridcolor="#E5DCC9", title="Volume"),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -117,13 +117,14 @@ def _render_volume_profile(interval: str = "1h", limit: int = 200, buckets: int 
                   annotation_text=f" Spot ${last_close:,.0f}",
                   annotation_font=dict(color=TEAL, size=10))
     fig.update_layout(**base_layout(title=f"Volume profile · {interval} · {buckets} buckets", height=420),
-                      xaxis=dict(title="Volume (BTC)", gridcolor="#EDEBE6"),
-                      yaxis=dict(title="Price ($)", gridcolor="#EDEBE6"))
+                      xaxis=dict(title="Volume (BTC)", gridcolor="#E5DCC9"),
+                      yaxis=dict(title="Price ($)", gridcolor="#E5DCC9"))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
 def main() -> None:
     st.set_page_config(page_title="Spot / Volume · BTC", page_icon="₿", layout="wide")
+    inject_global_css()
     page_title("Spot / Volume", "Price candles · SMA stack · VWAP · volume profile")
 
     sb = st.sidebar

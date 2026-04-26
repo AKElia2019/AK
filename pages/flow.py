@@ -19,7 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from charts.theme import (   # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 from data.flows import (   # noqa: E402
     fetch_binance_spot_trades,
@@ -82,8 +82,8 @@ def _render_aggressor_flow(trades: pd.DataFrame, freq: str = "1min") -> None:
     fig.add_hline(y=0, line=dict(color=STONE, width=1))
     fig.update_layout(**base_layout(title=f"Aggressor flow · {freq} buckets", height=320),
                       barmode="relative",
-                      xaxis=dict(title=None, gridcolor="#EDEBE6"),
-                      yaxis=dict(title="Notional ($)", gridcolor="#EDEBE6"),
+                      xaxis=dict(title=None, gridcolor="#E5DCC9"),
+                      yaxis=dict(title="Notional ($)", gridcolor="#E5DCC9"),
                       legend=dict(orientation="h", yanchor="top", y=-0.18,
                                   xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -129,8 +129,8 @@ def _render_ls_ratio() -> None:
     src = str(df["_source"].iloc[-1])
     fig.update_layout(**base_layout(title=f"Long / Short account ratio (Coinglass · {src})",
                                     height=300),
-                      xaxis=dict(title=None, gridcolor="#EDEBE6"),
-                      yaxis=dict(title="% of accounts", range=[0, 100], gridcolor="#EDEBE6"),
+                      xaxis=dict(title=None, gridcolor="#E5DCC9"),
+                      yaxis=dict(title="% of accounts", range=[0, 100], gridcolor="#E5DCC9"),
                       legend=dict(orientation="h", yanchor="top", y=-0.18,
                                   xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -157,8 +157,8 @@ def _render_liquidations() -> None:
     fig.update_layout(**base_layout(title=f"Liquidations (Coinglass · {src})",
                                     height=300),
                       barmode="relative",
-                      xaxis=dict(title=None, gridcolor="#EDEBE6"),
-                      yaxis=dict(title="USD notional", gridcolor="#EDEBE6"),
+                      xaxis=dict(title=None, gridcolor="#E5DCC9"),
+                      yaxis=dict(title="USD notional", gridcolor="#E5DCC9"),
                       legend=dict(orientation="h", yanchor="top", y=-0.18,
                                   xanchor="center", x=0.5))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -166,6 +166,7 @@ def _render_liquidations() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Flow · BTC", page_icon="₿", layout="wide")
+    inject_global_css()
     page_title("Flow", "Aggressor tape · long/short ratio · liquidations")
 
     sb = st.sidebar

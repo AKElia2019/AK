@@ -37,7 +37,7 @@ from analytics.pipeline import PipelineResult, run_pipeline   # noqa: E402
 from analytics.rn_pdf import compute_rn_pdf                  # noqa: E402
 from charts.theme import (                                    # noqa: E402
     GOLD, TEAL, RED, AMBER, STONE, INK,
-    base_layout, fmt_money, page_title, section_label,
+    base_layout, fmt_money, inject_global_css, page_title, section_label,
 )
 
 
@@ -84,8 +84,8 @@ def _line_chart(x, y, title, xlabel, ylabel,
                       annotation_font=dict(color=INK, size=10))
     fig.update_layout(
         **base_layout(title=title, height=height),
-        xaxis=dict(title=xlabel, gridcolor="#EDEBE6"),
-        yaxis=dict(title=ylabel, gridcolor="#EDEBE6"),
+        xaxis=dict(title=xlabel, gridcolor="#E5DCC9"),
+        yaxis=dict(title=ylabel, gridcolor="#E5DCC9"),
     )
     return fig
 
@@ -186,6 +186,7 @@ def _step_moments(K: np.ndarray, pdf: np.ndarray, spot: float) -> dict:
 def main() -> None:
     st.set_page_config(page_title="OI-Adjusted RN · Step by Step",
                        page_icon="₿", layout="wide")
+    inject_global_css()
     page_title(
         "OI-Adjusted RN — Step by Step",
         "How the BL density gets tilted by open interest, one step at a time",
@@ -306,8 +307,8 @@ def main() -> None:
                           annotation_font=dict(color=INK, size=10))
         fig.update_layout(
             **base_layout(title="Raw OI per strike (calls + puts)", height=320),
-            xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
-            yaxis=dict(title="Open interest (contracts)", gridcolor="#EDEBE6"),
+            xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
+            yaxis=dict(title="Open interest (contracts)", gridcolor="#E5DCC9"),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -347,8 +348,8 @@ same 500-point grid).
                       annotation_font=dict(color=INK, size=10))
     fig.update_layout(
         **base_layout(title="Raw vs smoothed OI on the BL grid", height=320),
-        xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="OI (contracts)", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
+        yaxis=dict(title="OI (contracts)", gridcolor="#E5DCC9"),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -386,9 +387,9 @@ single dominant cluster).
         fig.add_vline(x=spot, line=dict(color=INK, width=1.4, dash="dot"))
     fig.update_layout(
         **base_layout(title="z(K) — how crowded each strike is", height=300),
-        xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
         yaxis=dict(title="z-score (clipped to ±3)",
-                   range=[-3.2, 3.2], gridcolor="#EDEBE6"),
+                   range=[-3.2, 3.2], gridcolor="#E5DCC9"),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -426,8 +427,8 @@ positive everywhere.
         fig.add_vline(x=spot, line=dict(color=INK, width=1.4, dash="dot"))
     fig.update_layout(
         **base_layout(title="tilt(K) = max(0.05, 1 + λ · z(K))", height=300),
-        xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Multiplier", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
+        yaxis=dict(title="Multiplier", gridcolor="#E5DCC9"),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -461,8 +462,8 @@ fixes this.
         fig.add_vline(x=spot, line=dict(color=INK, width=1.4, dash="dot"))
     fig.update_layout(
         **base_layout(title="Before vs after tilt (un-normalised)", height=320),
-        xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Density (un-normalised)", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
+        yaxis=dict(title="Density (un-normalised)", gridcolor="#E5DCC9"),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -500,8 +501,8 @@ Now the OI-adjusted density integrates to 1 and is a proper probability density.
                       annotation_font=dict(color=INK, size=10))
     fig.update_layout(
         **base_layout(title="Normalised: base vs OI-adjusted", height=320),
-        xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
-        yaxis=dict(title="Probability density", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
+        yaxis=dict(title="Probability density", gridcolor="#E5DCC9"),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -553,9 +554,9 @@ $$P(\text{price} > \text{spot}) = 1 - F(\text{spot})
     fig.update_layout(
         **base_layout(title="CDFs — where 50% line crosses spot tells you P(below)",
                       height=320),
-        xaxis=dict(title="Strike K ($)", gridcolor="#EDEBE6"),
+        xaxis=dict(title="Strike K ($)", gridcolor="#E5DCC9"),
         yaxis=dict(title="Cumulative probability (%)",
-                   range=[0, 100], gridcolor="#EDEBE6"),
+                   range=[0, 100], gridcolor="#E5DCC9"),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
